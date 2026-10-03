@@ -1,0 +1,41 @@
+{
+  "name": "brobuilder-dex",
+  "version": "1.0.0",
+  "description": "Official decentralized exchange (DEX) for BRO Builder, a platform for trading and managing digital assets",
+  "private": true,
+  "bugs": "https://github.com/BRO-Builder/dex/issues",
+  "homepage": "https://github.com/BRO-Builder/dex#readme",
+  "license": "UNLICENSED",
+  "author": {
+    "name": "Adriane Justine Tan",
+    "email": "me@eidoriantan.com",
+    "url": "https://eidoriantan.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BRO-Builder/dex.git"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^5.0.4",
+    "typescript": "^5.9.0",
+    "vite": "^7.1.0",
+    "vite-plugin-node-polyfills": "^0.28.0"
+  },
+  "dependencies": {
+    "@taquito/beacon-wallet": "^25.0.0",
+    "@taquito/michel-codec": "^25.0.0",
+    "@taquito/taquito": "^25.0.0",
+    "@taquito/utils": "^25.0.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-router-dom": "^7.9.4"
+  }
+}
