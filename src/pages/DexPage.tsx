@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { AnimatedLogo } from "../components/AnimatedLogo";
 import { LoadingButton, WalletBar } from "../components/Controls";
 import { fetchTokenBalance, fetchTokenMetadata, type TokenMetadata } from "../shared/tokenMetadata";
 import { formatUnits, parseUnits, toBigInt } from "../shared/units";
@@ -44,6 +45,7 @@ export default function DexPage() {
   const [direction, setDirection] = useState<Direction>("xtz-bro");
   const [tab, setTab] = useState<"swap" | "liquidity">("swap");
   const [pay, setPay] = useState("");
+  const [activePreset, setActivePreset] = useState<number | null>(null);
   const [xtzIn, setXtzIn] = useState("");
   const [slippage, setSlippage] = useState("1");
   const [messages, setMessages] = useState(["Loading pool data..."]);
@@ -218,11 +220,20 @@ export default function DexPage() {
   const receiveBalance = direction === "xtz-bro" ? balances.token : balances.xtz;
   const formatBalance = (value: bigint | null, decimals: number, symbol: string) =>
     value === null ? "—" : `${formatUnits(value, decimals, 6)} ${symbol}`;
+  const setAmountPercent = (percent: number) => {
+    if (payBalance === null) return;
+    const feeReserve = direction === "xtz-bro" && percent === 100 ? 100000n : 0n;
+    const available = payBalance > feeReserve ? payBalance - feeReserve : 0n;
+    const amount = available * BigInt(percent) / 100n;
+    setPay(amount > 0n ? formatUnits(amount, directionDecimals, 8) : "");
+    setActivePreset(percent);
+  };
 
   return <main className="wrap">
     <div className="brand">
-      <h1>BRO Builder <span>DEX</span></h1>
-      <p>Swap BRO Token or provide liquidity on Tezos.</p>
+      <AnimatedLogo />
+      <h1 style={{ paddingTop: "10px" }}>BRO <span>Exchange</span></h1>
+      <p style={{ marginTop: "0px" }}>Swap BRO Token or provide liquidity.</p>
     </div>
     <WalletBar wallet={wallet} />
     <div className="stats">
@@ -256,15 +267,30 @@ export default function DexPage() {
             <div className="box">
               <div className="top">
                 <span>You Pay</span>
-                <span>Balance: {formatBalance(payBalance, directionDecimals, payToken)}</span>
+                <span id="payBalance">Balance: {formatBalance(payBalance, directionDecimals, payToken)}</span>
               </div>
               <div className="row">
-                <input className="input" value={pay} onChange={(event) => setPay(event.target.value)} type="number" placeholder="0.00" />
+                <input className="input" value={pay} onChange={(event) => { setPay(event.target.value); setActivePreset(null); }} type="number" min="0" step="any" placeholder="0.00" />
                 <div className="token">{payToken}</div>
               </div>
             </div>
 
-            <button className="arrow" onClick={() => { setDirection(direction === "xtz-bro" ? "bro-xtz" : "xtz-bro"); setPay(""); }}>↕</button>
+            <div className="amount-presets">
+              {[25, 50, 75, 100].map((percent) => (
+                <button
+                  type="button"
+                  className={activePreset === percent ? "amount-preset active" : "amount-preset"}
+                  data-percent={percent}
+                  disabled={!wallet.address || payBalance === null}
+                  onClick={() => setAmountPercent(percent)}
+                  key={percent}
+                >
+                  {percent === 100 ? "MAX" : `${percent}%`}
+                </button>
+              ))}
+            </div>
+
+            <button className="arrow" onClick={() => { setDirection(direction === "xtz-bro" ? "bro-xtz" : "xtz-bro"); setPay(""); setActivePreset(null); }}>↕</button>
             <div className="box">
               <div className="top">
                 <span>You Receive</span>
@@ -325,7 +351,7 @@ export default function DexPage() {
             <div className="box">
               <div className="top">
                 <span>XTZ Amount</span>
-                <span>Balance: {formatBalance(balances.xtz, 6, "XTZ")}</span>
+                <span id="xtzBalance">Balance: {formatBalance(balances.xtz, 6, "XTZ")}</span>
               </div>
 
               <div className="row">
@@ -337,7 +363,7 @@ export default function DexPage() {
             <div className="box">
               <div className="top">
                 <span>{pool?.token.symbol ?? "BRO"} Amount</span>
-                <span>Balance: {formatBalance(balances.token, pool?.token.decimals ?? 0, pool?.token.symbol ?? "BRO")}</span>
+                <span id="broBalance">Balance: {formatBalance(balances.token, pool?.token.decimals ?? 0, pool?.token.symbol ?? "BRO")}</span>
               </div>
               <div className="row">
                 <input className="input" readOnly value={matchingToken ? formatUnits(matchingToken, pool?.token.decimals ?? 0, 6) : ""} placeholder="0.00" />
