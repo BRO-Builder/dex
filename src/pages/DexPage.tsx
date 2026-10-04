@@ -53,6 +53,7 @@ export default function DexPage() {
   const [swapping, setSwapping] = useState(false);
   const [addingLiquidity, setAddingLiquidity] = useState(false);
   const [authorizing, setAuthorizing] = useState(true);
+  const [transaction, setTransaction] = useState<{ hash: string; url: string } | null>(null);
 
   function log(message: string) {
     setMessages((current) => [...current.slice(-4), message]);
@@ -166,7 +167,11 @@ export default function DexPage() {
       }
       log(`Swap submitted: ${operation.opHash}`);
       await operation.confirmation();
-      log(`Swap complete: ${wallet.selected.explorer}/${operation.opHash}`);
+      setTransaction({
+        hash: operation.opHash,
+        url: `${wallet.selected.explorer}/${operation.opHash}`,
+      });
+      log("Swap complete.");
       setPay("");
       await loadData();
       await loadBalances();
@@ -203,6 +208,10 @@ export default function DexPage() {
       }
       log(`Liquidity submitted: ${operation.opHash}`);
       await operation.confirmation();
+      setTransaction({
+        hash: operation.opHash,
+        url: `${wallet.selected.explorer}/${operation.opHash}`,
+      });
       log("Liquidity added.");
       setXtzIn("");
       await loadData();
@@ -442,6 +451,15 @@ export default function DexPage() {
       </div>
     </div>
 
-    <div className="status">{messages.join("\n")}</div>
+    <div className="status">
+      {messages.join("\n")}
+      {transaction && (
+        <div>
+          <a href={transaction.url} target="_blank" rel="noreferrer">
+            View transaction {transaction.hash}
+          </a>
+        </div>
+      )}
+    </div>
   </main>;
 }
