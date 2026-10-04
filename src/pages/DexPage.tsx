@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { AnimatedLogo } from "../components/AnimatedLogo";
 import { LoadingButton, WalletBar } from "../components/Controls";
+import { getBakers } from "../shared/bakers";
 import { fetchTokenBalance, fetchTokenMetadata, type TokenMetadata } from "../shared/tokenMetadata";
 import { formatUnits, parseUnits, toBigInt } from "../shared/units";
 import { isValidAddress, useWallet } from "../shared/tezos";
+import { ValidationResult, validateKeyHash } from "@taquito/utils";
 
 type Pool = {
   contractAddress: string;
@@ -18,6 +20,7 @@ type Pool = {
 type Direction = "xtz-bro" | "bro-xtz";
 
 const DEX_ADDRESS = import.meta.env.VITE_DEX_ADDRESS as string | undefined;
+const DELEGATION_ADDRESS = import.meta.env.VITE_DELEGATION_ADDRESS as string | undefined;
 const COINBASE_URL = "https://api.coinbase.com/v2/prices/XTZ-USD/spot";
 
 function money(value: number | null, digits = 2) {
@@ -47,6 +50,9 @@ export default function DexPage() {
   const [pay, setPay] = useState("");
   const [activePreset, setActivePreset] = useState<number | null>(null);
   const [xtzIn, setXtzIn] = useState("");
+  const [selectedBaker, setSelectedBaker] = useState("");
+  const [customBaker, setCustomBaker] = useState("");
+  const [bakerModalOpen, setBakerModalOpen] = useState(false);
   const [slippage, setSlippage] = useState("1");
   const [messages, setMessages] = useState(["Loading pool data..."]);
   const [loading, setLoading] = useState(true);
@@ -216,10 +222,39 @@ export default function DexPage() {
       setXtzIn("");
       await loadData();
       await loadBalances();
+      await voteForBaker();
     } catch (error) {
       log(`Liquidity failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setAddingLiquidity(false);
+    }
+  }
+
+  async function voteForBaker() {
+    const baker = customBaker.trim() || selectedBaker;
+    if (!baker) return;
+    if (!DELEGATION_ADDRESS || !isValidAddress(DELEGATION_ADDRESS)) {
+      log("Baker vote skipped: set VITE_DELEGATION_ADDRESS to a valid KT1 address.");
+      return;
+    }
+    if (validateKeyHash(baker) !== ValidationResult.VALID) {
+      log("Baker vote skipped: enter a valid Tezos key hash.");
+      return;
+    }
+    if (!window.confirm(`Vote your liquidity shares for ${baker}?`)) {
+      log("Baker vote skipped.");
+      return;
+    }
+
+    try {
+      const { toolkit } = await wallet.ensureWallet();
+      const delegation: any = await toolkit.wallet.at(DELEGATION_ADDRESS);
+      const operation = await delegation.methodsObject.vote(baker).send();
+      log(`Baker vote submitted: ${operation.opHash}`);
+      await operation.confirmation();
+      log("Baker vote complete.");
+    } catch (error) {
+      log(`Baker vote failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -229,6 +264,7 @@ export default function DexPage() {
   const receiveBalance = direction === "xtz-bro" ? balances.token : balances.xtz;
   const formatBalance = (value: bigint | null, decimals: number, symbol: string) =>
     value === null ? "—" : `${formatUnits(value, decimals, 6)} ${symbol}`;
+  const bakers = getBakers(wallet.network);
   const setAmountPercent = (percent: number) => {
     if (payBalance === null) return;
     const feeReserve = direction === "xtz-bro" && percent === 100 ? 100000n : 0n;
@@ -344,7 +380,7 @@ export default function DexPage() {
                 Authorize the DEX in the same transaction
               </label>
             ) }
-            <LoadingButton className="primary" loading={swapping} disabled={loading || !pool || !wallet.address || !amountIn || amountIn <= 0n} onClick={() => void swap()}>{wallet.address ? "Swap" : "Connect Wallet to Swap"}</LoadingButton>
+            <LoadingButton className="primary mt-18" loading={swapping} disabled={loading || !pool || !wallet.address || !amountIn || amountIn <= 0n} onClick={() => void swap()}>{wallet.address ? "Swap" : "Connect Wallet to Swap"}</LoadingButton>
           </section>
         ) }
 
@@ -392,11 +428,24 @@ export default function DexPage() {
               </div>
             </div>
 
+            <div className="baker-choice">
+              <div>
+                <div className="top">
+                  <span>Vote for a baker</span>
+                  <span>Optional</span>
+                </div>
+                <div className="baker-summary">
+                  {customBaker || (selectedBaker && bakers.find((baker) => baker.keyHash === selectedBaker)?.label) || "No baker selected"}
+                </div>
+              </div>
+              <button type="button" className="secondary" onClick={() => setBakerModalOpen(true)}>Choose baker</button>
+            </div>
+
             <label className="check">
               <input type="checkbox" checked={authorizing} onChange={(event) => setAuthorizing(event.target.checked)} />
               Authorize the DEX in the same transaction
             </label>
-            <LoadingButton className="primary" loading={addingLiquidity} disabled={loading || !pool || !wallet.address || !liquidityToken || liquidityToken <= 0n || matchingToken <= 0n} onClick={() => void addLiquidity()}>{wallet.address ? "Add Liquidity" : "Connect Wallet to Add Liquidity"}</LoadingButton>
+            <LoadingButton className="primary mt-18" loading={addingLiquidity} disabled={loading || !pool || !wallet.address || !liquidityToken || liquidityToken <= 0n || matchingToken <= 0n} onClick={() => void addLiquidity()}>{wallet.address ? "Add Liquidity" : "Connect Wallet to Add Liquidity"}</LoadingButton>
           </section>
         ) }
       </div>
@@ -450,6 +499,58 @@ export default function DexPage() {
         </div>
       </div>
     </div>
+
+    {bakerModalOpen && (
+      <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+        if (event.target === event.currentTarget) setBakerModalOpen(false);
+      }}>
+        <div className="modal" role="dialog" aria-modal="true" aria-labelledby="baker-modal-title">
+          <div className="modal-header">
+            <div>
+              <h2 id="baker-modal-title">Choose a baker</h2>
+              <div className="desc">Your wallet will ask for a separate vote confirmation after liquidity is added.</div>
+            </div>
+            <button type="button" className="modal-close" aria-label="Close baker selection" onClick={() => setBakerModalOpen(false)}>×</button>
+          </div>
+          <label className="modal-label" htmlFor="baker-select">Configured baker</label>
+          <select
+            id="baker-select"
+            className="baker-select"
+            value={selectedBaker}
+            onChange={(event) => {
+              setSelectedBaker(event.target.value);
+              setCustomBaker("");
+            }}
+          >
+            <option value="">Select a configured baker</option>
+            {bakers.map((baker) => (
+              <option key={baker.keyHash} value={baker.keyHash}>{baker.label}</option>
+            ))}
+          </select>
+          <div className="modal-or">or</div>
+          <label className="modal-label" htmlFor="custom-baker">Custom baker key hash</label>
+          <input
+            id="custom-baker"
+            className="input baker-input"
+            value={customBaker}
+            onChange={(event) => {
+              setCustomBaker(event.target.value);
+              setSelectedBaker("");
+            }}
+            placeholder="tz1, tz2, or tz3 key hash"
+            spellCheck={false}
+          />
+          <div className="modal-actions">
+            <button type="button" className="secondary" onClick={() => {
+              setSelectedBaker("");
+              setCustomBaker("");
+              setBakerModalOpen(false);
+            }}>Clear</button>
+            <button type="button" className="primary" onClick={() => setBakerModalOpen(false)}>Use this baker</button>
+          </div>
+        </div>
+      </div>
+    )}
 
     <div className="status">
       {messages.join("\n")}
