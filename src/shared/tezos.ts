@@ -4,9 +4,27 @@ import { TezosToolkit } from "@taquito/taquito";
 import { ValidationResult, validateAddress } from "@taquito/utils";
 
 export const NETWORKS = [
-  { label: "ShadowNet", value: "shadownet", rpc: "https://rpc.tzkt.io/shadownet", api: "https://api.shadownet.tzkt.io", explorer: "https://shadownet.tzkt.io" },
-  { label: "Ghostnet", value: "ghostnet", rpc: "https://rpc.tzkt.io/ghostnet", api: "https://api.ghostnet.tzkt.io", explorer: "https://ghostnet.tzkt.io" },
-  { label: "Mainnet", value: "mainnet", rpc: "https://rpc.tzkt.io/mainnet", api: "https://api.tzkt.io", explorer: "https://tzkt.io" },
+  {
+    label: "ShadowNet",
+    value: "shadownet",
+    rpc: "https://rpc.tzkt.io/shadownet",
+    api: "https://api.shadownet.tzkt.io",
+    explorer: "https://shadownet.tzkt.io"
+  },
+  {
+    label: "Ghostnet",
+    value: "ghostnet",
+    rpc: "https://rpc.tzkt.io/ghostnet",
+    api: "https://api.ghostnet.tzkt.io",
+    explorer: "https://ghostnet.tzkt.io"
+  },
+  {
+    label: "Mainnet",
+    value: "mainnet",
+    rpc: "https://rpc.tzkt.io/mainnet",
+    api: "https://api.tzkt.io",
+    explorer: "https://tzkt.io"
+  },
 ] as const;
 
 type Network = (typeof NETWORKS)[number];

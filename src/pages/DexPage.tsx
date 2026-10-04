@@ -98,7 +98,9 @@ export default function DexPage() {
 
   useEffect(() => {
     setLoading(true);
-    void loadData().catch((error) => log(`Unable to load pool: ${error instanceof Error ? error.message : String(error)}`)).finally(() => setLoading(false));
+    void loadData()
+      .catch((error) => log(`Unable to load pool: ${error instanceof Error ? error.message : String(error)}`))
+      .finally(() => setLoading(false));
   }, [wallet.selected.api]);
 
   useEffect(() => {
@@ -149,7 +151,11 @@ export default function DexPage() {
         if (authorizing) {
           const token: any = await toolkit.wallet.at(pool.tokenAddress);
           const authorize = token.methodsObject.update_operators([{
-            add_operator: { owner: wallet.address, operator: pool.contractAddress, token_id: pool.tokenId },
+            add_operator: {
+              owner: wallet.address,
+              operator: pool.contractAddress,
+              token_id: pool.tokenId
+            },
           }]);
           operation = await toolkit.wallet.batch().withContractCall(authorize).withContractCall(call).send();
         } else {
@@ -180,7 +186,11 @@ export default function DexPage() {
       if (authorizing) {
         const token: any = await toolkit.wallet.at(pool.tokenAddress);
         const authorize = token.methodsObject.update_operators([{
-          add_operator: { owner: wallet.address, operator: pool.contractAddress, token_id: pool.tokenId },
+          add_operator: {
+            owner: wallet.address,
+            operator: pool.contractAddress,
+            token_id: pool.tokenId
+          },
         }]);
         operation = await toolkit.wallet.batch()
           .withContractCall(authorize)
@@ -210,36 +220,202 @@ export default function DexPage() {
     value === null ? "—" : `${formatUnits(value, decimals, 6)} ${symbol}`;
 
   return <main className="wrap">
-    <div className="brand"><h1>BRO Builder <span>DEX</span></h1><p>Swap BRO Token or provide liquidity on Tezos.</p></div>
+    <div className="brand">
+      <h1>BRO Builder <span>DEX</span></h1>
+      <p>Swap BRO Token or provide liquidity on Tezos.</p>
+    </div>
     <WalletBar wallet={wallet} />
     <div className="stats">
-      <div className="stat"><div className="label">BRO Price</div><div className="value">{money(broUsd, 5)}</div><div className="sub">Pool spot price</div></div>
-      <div className="stat"><div className="label">Pool Ratio</div><div className="value">{ratio ? `1 XTZ ≈ ${number(ratio, 4)} BRO` : "—"}</div><div className="sub">Current reserve ratio</div></div>
-      <div className="stat"><div className="label">Total Liquidity</div><div className="value">{money(liquidityUsd)}</div><div className="sub">BRO / XTZ pool</div></div>
+      <div className="stat">
+        <div className="label">BRO Price</div>
+        <div className="value">{money(broUsd, 5)}</div>
+        <div className="sub">Pool spot price</div>
+      </div>
+      <div className="stat">
+        <div className="label">Pool Ratio</div>
+        <div className="value">{ratio ? `1 XTZ ≈ ${number(ratio, 4)} BRO` : "—"}</div>
+        <div className="sub">Current reserve ratio</div>
+      </div>
+      <div className="stat">
+        <div className="label">Total Liquidity</div>
+        <div className="value">{money(liquidityUsd)}</div>
+        <div className="sub">BRO / XTZ pool</div>
+      </div>
     </div>
     <div className="grid">
       <div className="card">
-        <div className="tabs"><button className={tab === "swap" ? "tab active" : "tab"} onClick={() => setTab("swap")}>SWAP</button><button className={tab === "liquidity" ? "tab active" : "tab"} onClick={() => setTab("liquidity")}>LIQUIDITY</button></div>
-        {tab === "swap" && <section>
-          <h2>Swap {pool?.token.symbol ?? "BRO"}</h2><div className="desc">Exchange {pool?.token.symbol ?? "BRO"} and XTZ using the current pool.</div>
-          <div className="box"><div className="top"><span>You Pay</span><span>Balance: {formatBalance(payBalance, directionDecimals, payToken)}</span></div><div className="row"><input className="input" value={pay} onChange={(event) => setPay(event.target.value)} type="number" placeholder="0.00" /><div className="token">{payToken}</div></div></div>
-          <button className="arrow" onClick={() => { setDirection(direction === "xtz-bro" ? "bro-xtz" : "xtz-bro"); setPay(""); }}>↕</button>
-          <div className="box"><div className="top"><span>You Receive</span><span>Balance: {formatBalance(receiveBalance, outputDecimals, receiveToken)}</span></div><div className="row"><input className="input" readOnly value={output ? formatUnits(output, outputDecimals, 6) : ""} placeholder="0.00" /><div className="token">{receiveToken}</div></div></div>
-          <div className="details"><div className="detail"><span>Pool Price</span><span>{ratio ? direction === "xtz-bro" ? `1 XTZ ≈ ${number(ratio, 6)} BRO` : `1 BRO ≈ ${number(1 / ratio, 8)} XTZ` : "—"}</span></div><div className="detail"><span>Price Impact</span><span>{priceImpact === null ? "—" : `${priceImpact.toFixed(2)}%`}</span></div><div className="detail"><span>Minimum Received</span><span>{output ? `${formatUnits(minimum, outputDecimals, 6)} ${receiveToken}` : "—"}</span></div><div className="detail"><span>Slippage</span><span>{slippagePercent.toFixed(2)}%</span></div><div className="slip">{[0.5, 1, 2, 5].map((value) => <button key={value} className={slippage === String(value) ? "active" : ""} onClick={() => setSlippage(String(value))}>{value}%</button>)}<input className="custom" value={slippage} onChange={(event) => setSlippage(event.target.value)} placeholder="Custom" /></div></div>
-          {direction === "bro-xtz" && <label className="check"><input type="checkbox" checked={authorizing} onChange={(event) => setAuthorizing(event.target.checked)} /> Authorize the DEX in the same transaction</label>}
-          <LoadingButton className="primary" loading={swapping} disabled={loading || !pool || !wallet.address || !amountIn || amountIn <= 0n} onClick={() => void swap()}>{wallet.address ? "Swap" : "Connect Wallet to Swap"}</LoadingButton>
-        </section>}
-        {tab === "liquidity" && <section>
-          <h2>Add Liquidity</h2><div className="desc">Supply {pool?.token.symbol ?? "BRO"} and XTZ to the pool at the current ratio.</div><div className="liquidity"><div className="liqbig">{money(liquidityUsd)}</div><div className="liqsub">Current pool liquidity</div></div>
-          <div className="box"><div className="top"><span>XTZ Amount</span><span>Balance: {formatBalance(balances.xtz, 6, "XTZ")}</span></div><div className="row"><input className="input" value={xtzIn} onChange={(event) => setXtzIn(event.target.value)} type="number" placeholder="0.00" /><div className="token">XTZ</div></div></div>
-          <div className="box"><div className="top"><span>{pool?.token.symbol ?? "BRO"} Amount</span><span>Balance: {formatBalance(balances.token, pool?.token.decimals ?? 0, pool?.token.symbol ?? "BRO")}</span></div><div className="row"><input className="input" readOnly value={matchingToken ? formatUnits(matchingToken, pool?.token.decimals ?? 0, 6) : ""} placeholder="0.00" /><div className="token">{pool?.token.symbol ?? "BRO"}</div></div></div>
-          <div className="details"><div className="detail"><span>Pool Ratio</span><span>{ratio ? `1 XTZ ≈ ${number(ratio, 6)} ${pool?.token.symbol}` : "—"}</span></div><div className="detail"><span>Estimated Pool Share</span><span>{sharePercent === null ? "—" : `${sharePercent.toFixed(4)}%`}</span></div></div>
-          <label className="check"><input type="checkbox" checked={authorizing} onChange={(event) => setAuthorizing(event.target.checked)} /> Authorize the DEX in the same transaction</label>
-          <LoadingButton className="primary" loading={addingLiquidity} disabled={loading || !pool || !wallet.address || !liquidityToken || liquidityToken <= 0n || matchingToken <= 0n} onClick={() => void addLiquidity()}>{wallet.address ? "Add Liquidity" : "Connect Wallet to Add Liquidity"}</LoadingButton>
-        </section>}
+        <div className="tabs">
+          <button className={tab === "swap" ? "tab active" : "tab"} onClick={() => setTab("swap")}>SWAP</button>
+          <button className={tab === "liquidity" ? "tab active" : "tab"} onClick={() => setTab("liquidity")}>LIQUIDITY</button>
+        </div>
+
+        { tab === "swap" && (
+          <section>
+            <h2>Swap {pool?.token.symbol ?? "BRO"}</h2>
+            <div className="desc">Exchange {pool?.token.symbol ?? "BRO"} and XTZ using the current pool.</div>
+            <div className="box">
+              <div className="top">
+                <span>You Pay</span>
+                <span>Balance: {formatBalance(payBalance, directionDecimals, payToken)}</span>
+              </div>
+              <div className="row">
+                <input className="input" value={pay} onChange={(event) => setPay(event.target.value)} type="number" placeholder="0.00" />
+                <div className="token">{payToken}</div>
+              </div>
+            </div>
+
+            <button className="arrow" onClick={() => { setDirection(direction === "xtz-bro" ? "bro-xtz" : "xtz-bro"); setPay(""); }}>↕</button>
+            <div className="box">
+              <div className="top">
+                <span>You Receive</span>
+                <span>Balance: {formatBalance(receiveBalance, outputDecimals, receiveToken)}</span>
+              </div>
+              <div className="row">
+                <input className="input" readOnly value={output ? formatUnits(output, outputDecimals, 6) : ""} placeholder="0.00" />
+                <div className="token">{receiveToken}</div>
+              </div>
+            </div>
+            <div className="details">
+              <div className="detail">
+                <span>Pool Price</span>
+                <span>{ratio ? direction === "xtz-bro" ? `1 XTZ ≈ ${number(ratio, 6)} BRO` : `1 BRO ≈ ${number(1 / ratio, 8)} XTZ` : "—"}</span>
+              </div>
+
+              <div className="detail">
+                <span>Price Impact</span>
+                <span>{priceImpact === null ? "—" : `${priceImpact.toFixed(2)}%`}</span>
+              </div>
+
+              <div className="detail">
+                <span>Minimum Received</span>
+                <span>{output ? `${formatUnits(minimum, outputDecimals, 6)} ${receiveToken}` : "—"}</span>
+              </div>
+
+              <div className="detail">
+                <span>Slippage</span>
+                <span>{slippagePercent.toFixed(2)}%</span>
+              </div>
+              <div className="slip">
+                { [0.5, 1, 2, 5].map((value) => (
+                  <button key={value} className={slippage === String(value) ? "active" : ""} onClick={() => setSlippage(String(value))}>{value}%</button>
+                )) }
+                <input className="custom" value={slippage} onChange={(event) => setSlippage(event.target.value)} placeholder="Custom" />
+              </div>
+            </div>
+
+            { direction === "bro-xtz" && (
+              <label className="check">
+                <input type="checkbox" checked={authorizing} onChange={(event) => setAuthorizing(event.target.checked)} />
+                Authorize the DEX in the same transaction
+              </label>
+            ) }
+            <LoadingButton className="primary" loading={swapping} disabled={loading || !pool || !wallet.address || !amountIn || amountIn <= 0n} onClick={() => void swap()}>{wallet.address ? "Swap" : "Connect Wallet to Swap"}</LoadingButton>
+          </section>
+        ) }
+
+        { tab === "liquidity" && (
+          <section>
+            <h2>Add Liquidity</h2>
+            <div className="desc">Supply {pool?.token.symbol ?? "BRO"} and XTZ to the pool at the current ratio.</div>
+            <div className="liquidity">
+              <div className="liqbig">{money(liquidityUsd)}</div>
+              <div className="liqsub">Current pool liquidity</div>
+            </div>
+
+            <div className="box">
+              <div className="top">
+                <span>XTZ Amount</span>
+                <span>Balance: {formatBalance(balances.xtz, 6, "XTZ")}</span>
+              </div>
+
+              <div className="row">
+                <input className="input" value={xtzIn} onChange={(event) => setXtzIn(event.target.value)} type="number" placeholder="0.00" />
+                <div className="token">XTZ</div>
+              </div>
+            </div>
+
+            <div className="box">
+              <div className="top">
+                <span>{pool?.token.symbol ?? "BRO"} Amount</span>
+                <span>Balance: {formatBalance(balances.token, pool?.token.decimals ?? 0, pool?.token.symbol ?? "BRO")}</span>
+              </div>
+              <div className="row">
+                <input className="input" readOnly value={matchingToken ? formatUnits(matchingToken, pool?.token.decimals ?? 0, 6) : ""} placeholder="0.00" />
+                <div className="token">{pool?.token.symbol ?? "BRO"}</div>
+              </div>
+            </div>
+
+            <div className="details">
+              <div className="detail">
+                <span>Pool Ratio</span>
+                <span>{ratio ? `1 XTZ ≈ ${number(ratio, 6)} ${pool?.token.symbol}` : "—"}</span>
+              </div>
+
+              <div className="detail">
+                <span>Estimated Pool Share</span>
+                <span>{sharePercent === null ? "—" : `${sharePercent.toFixed(4)}%`}</span>
+              </div>
+            </div>
+
+            <label className="check">
+              <input type="checkbox" checked={authorizing} onChange={(event) => setAuthorizing(event.target.checked)} />
+              Authorize the DEX in the same transaction
+            </label>
+            <LoadingButton className="primary" loading={addingLiquidity} disabled={loading || !pool || !wallet.address || !liquidityToken || liquidityToken <= 0n || matchingToken <= 0n} onClick={() => void addLiquidity()}>{wallet.address ? "Add Liquidity" : "Connect Wallet to Add Liquidity"}</LoadingButton>
+          </section>
+        ) }
       </div>
-      <div className="card"><h2>{pool?.token.symbol ?? "BRO"} / XTZ Pool</h2><div className="desc">Live information from the deployed BRO Builder pool.</div><div className="poolrow"><span>Pair</span><strong>{pool?.token.symbol ?? "BRO"} / XTZ</strong></div><div className="poolrow"><span>BRO Price</span><strong>{money(broUsd, 5)}</strong></div><div className="poolrow"><span>1 XTZ</span><strong>{ratio ? `${number(ratio, 6)} ${pool?.token.symbol}` : "—"}</strong></div><div className="poolrow"><span>1 BRO</span><strong>{ratio ? `${number(1 / ratio, 8)} XTZ` : "—"}</strong></div><div className="poolrow"><span>XTZ Reserve</span><strong>{pool ? `${formatUnits(pool.xtzPool, 6)} XTZ` : "—"}</strong></div><div className="poolrow"><span>{pool?.token.symbol ?? "BRO"} Reserve</span><strong>{pool ? `${formatUnits(pool.tokenPool, pool.token.decimals)} ${pool.token.symbol}` : "—"}</strong></div><div className="liquidity"><div className="label">Total Liquidity</div><div className="liqbig">{money(liquidityUsd)}</div><div className="liqsub">Estimated USD value of both reserves.</div></div><div className="poolrow"><span>Price Source</span><strong>Coinbase XTZ/USD</strong></div><div className="poolrow"><span>Updated</span><strong>{loading ? "Loading..." : new Date().toLocaleTimeString()}</strong></div></div>
+      <div className="card">
+        <h2>{pool?.token.symbol ?? "BRO"} / XTZ Pool</h2>
+        <div className="desc">Live information from the deployed BRO Builder pool.</div>
+        <div className="poolrow">
+          <span>Pair</span>
+          <strong>{pool?.token.symbol ?? "BRO"} / XTZ</strong>
+        </div>
+
+        <div className="poolrow">
+          <span>BRO Price</span>
+          <strong>{money(broUsd, 5)}</strong>
+        </div>
+
+        <div className="poolrow">
+          <span>1 XTZ</span>
+          <strong>{ratio ? `${number(ratio, 6)} ${pool?.token.symbol}` : "—"}</strong>
+        </div>
+
+        <div className="poolrow">
+          <span>1 BRO</span>
+          <strong>{ratio ? `${number(1 / ratio, 8)} XTZ` : "—"}</strong>
+        </div>
+
+        <div className="poolrow">
+          <span>XTZ Reserve</span>
+          <strong>{pool ? `${formatUnits(pool.xtzPool, 6)} XTZ` : "—"}</strong>
+        </div>
+
+        <div className="poolrow">
+          <span>{pool?.token.symbol ?? "BRO"} Reserve</span>
+          <strong>{pool ? `${formatUnits(pool.tokenPool, pool.token.decimals)} ${pool.token.symbol}` : "—"}</strong>
+        </div>
+
+        <div className="liquidity">
+          <div className="label">Total Liquidity</div>
+          <div className="liqbig">{money(liquidityUsd)}</div>
+          <div className="liqsub">Estimated USD value of both reserves.</div>
+        </div>
+
+        <div className="poolrow">
+          <span>Price Source</span>
+          <strong>Coinbase XTZ/USD</strong>
+        </div>
+
+        <div className="poolrow">
+          <span>Updated</span>
+          <strong>{loading ? "Loading..." : new Date().toLocaleTimeString()}</strong>
+        </div>
+      </div>
     </div>
+
     <div className="status">{messages.join("\n")}</div>
   </main>;
 }
