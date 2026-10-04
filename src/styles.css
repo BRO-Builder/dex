@@ -81,6 +81,28 @@ body {
   padding: 8px
 }
 
+.page-links {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin: 0 0 18px
+}
+
+.page-links a {
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 8px 12px;
+  font-size: 12px;
+  text-decoration: none
+}
+
+.page-links a.active,
+.page-links a:hover {
+  color: var(--gold);
+  border-color: var(--gold)
+}
+
 .connect,
 .primary {
   border: 0;
@@ -287,6 +309,10 @@ h2 {
   margin-top: 22px
 }
 
+.modal-actions .primary {
+  width: auto
+}
+
 .top {
   display: flex;
   justify-content: space-between;
@@ -450,6 +476,76 @@ h2 {
 
 .poolrow span {
   color: var(--muted)
+}
+
+.address-value {
+  font-size: 28px;
+  font-weight: 700;
+  margin-top: 7px
+}
+
+.address-full {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 8px;
+  word-break: break-all
+}
+
+.voting-tally {
+  margin-top: 20px
+}
+
+.table-wrap {
+  overflow-x: auto
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px
+}
+
+th,
+td {
+  border-bottom: 1px solid var(--line);
+  padding: 11px 8px;
+  text-align: left;
+  vertical-align: middle
+}
+
+th {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .7px
+}
+
+.tag {
+  display: inline-block;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-size: 10px;
+  margin: 3px 0 3px 6px;
+  padding: 2px 4px
+}
+
+.tag.ok {
+  color: var(--green);
+  border-color: var(--green)
+}
+
+.tag.warn {
+  color: var(--gold);
+  border-color: var(--gold)
+}
+
+.table-wrap .primary,
+.table-wrap .secondary {
+  width: auto;
+  padding: 7px 10px;
+  font-size: 11px
 }
 
 .liquidity {
