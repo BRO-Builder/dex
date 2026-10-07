@@ -50,6 +50,7 @@ export default function DexPage() {
   const [pay, setPay] = useState("");
   const [activePreset, setActivePreset] = useState<number | null>(null);
   const [xtzIn, setXtzIn] = useState("");
+  const [activeLiquidityPreset, setActiveLiquidityPreset] = useState<number | null>(null);
   const [selectedBaker, setSelectedBaker] = useState("");
   const [customBaker, setCustomBaker] = useState("");
   const [bakerModalOpen, setBakerModalOpen] = useState(false);
@@ -273,6 +274,14 @@ export default function DexPage() {
     setPay(amount > 0n ? formatUnits(amount, directionDecimals, 8) : "");
     setActivePreset(percent);
   };
+  const setLiquidityAmountPercent = (percent: number) => {
+    if (balances.xtz === null) return;
+    const feeReserve = percent === 100 ? 100000n : 0n;
+    const available = balances.xtz > feeReserve ? balances.xtz - feeReserve : 0n;
+    const amount = available * BigInt(percent) / 100n;
+    setXtzIn(amount > 0n ? formatUnits(amount, 6, 8) : "");
+    setActiveLiquidityPreset(percent);
+  };
 
   return <main className="wrap">
     <div className="brand">
@@ -400,9 +409,24 @@ export default function DexPage() {
               </div>
 
               <div className="row">
-                <input className="input" value={xtzIn} onChange={(event) => setXtzIn(event.target.value)} type="number" placeholder="0.00" />
+                <input className="input" value={xtzIn} onChange={(event) => { setXtzIn(event.target.value); setActiveLiquidityPreset(null); }} type="number" placeholder="0.00" />
                 <div className="token">XTZ</div>
               </div>
+            </div>
+
+            <div className="amount-presets">
+              {[25, 50, 75, 100].map((percent) => (
+                <button
+                  type="button"
+                  className={activeLiquidityPreset === percent ? "amount-preset active" : "amount-preset"}
+                  data-percent={percent}
+                  disabled={!wallet.address || balances.xtz === null}
+                  onClick={() => setLiquidityAmountPercent(percent)}
+                  key={percent}
+                >
+                  {percent === 100 ? "MAX" : `${percent}%`}
+                </button>
+              ))}
             </div>
 
             <div className="box">
