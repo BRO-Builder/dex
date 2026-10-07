@@ -343,10 +343,20 @@ h2 {
 }
 
 .token {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   background: #373b42;
   border-radius: 20px;
   padding: 8px 13px;
   font-weight: 700
+}
+
+.token-logo {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  object-fit: cover
 }
 
 .arrow {

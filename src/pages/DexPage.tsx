@@ -22,6 +22,7 @@ type Direction = "xtz-bro" | "bro-xtz";
 const DEX_ADDRESS = import.meta.env.VITE_DEX_ADDRESS as string | undefined;
 const DELEGATION_ADDRESS = import.meta.env.VITE_DELEGATION_ADDRESS as string | undefined;
 const COINBASE_URL = "https://api.coinbase.com/v2/prices/XTZ-USD/spot";
+const XTZ_LOGO_URL = "https://services.tzkt.io/v1/avatars-dark/tz3UQN6nBQHofmgQ3pZannhiYE2CT7TEZFim";
 
 function money(value: number | null, digits = 2) {
   return value === null || !Number.isFinite(value)
@@ -265,6 +266,12 @@ export default function DexPage() {
   const receiveBalance = direction === "xtz-bro" ? balances.token : balances.xtz;
   const formatBalance = (value: bigint | null, decimals: number, symbol: string) =>
     value === null ? "—" : `${formatUnits(value, decimals, 6)} ${symbol}`;
+  const currencyUnit = (symbol: string, imageUrl?: string) => (
+    <div className="token">
+      <img className="token-logo" src={imageUrl} alt="" aria-hidden="true" />
+      {symbol}
+    </div>
+  );
   const bakers = getBakers(wallet.network);
   const setAmountPercent = (percent: number) => {
     if (payBalance === null) return;
@@ -325,7 +332,7 @@ export default function DexPage() {
               </div>
               <div className="row">
                 <input className="input" value={pay} onChange={(event) => { setPay(event.target.value); setActivePreset(null); }} type="number" min="0" step="any" placeholder="0.00" />
-                <div className="token">{payToken}</div>
+                {currencyUnit(payToken, direction === "xtz-bro" ? XTZ_LOGO_URL : pool?.token.imageUrl)}
               </div>
             </div>
 
@@ -352,7 +359,7 @@ export default function DexPage() {
               </div>
               <div className="row">
                 <input className="input" readOnly value={output ? formatUnits(output, outputDecimals, 6) : ""} placeholder="0.00" />
-                <div className="token">{receiveToken}</div>
+                {currencyUnit(receiveToken, direction === "xtz-bro" ? pool?.token.imageUrl : XTZ_LOGO_URL)}
               </div>
             </div>
             <div className="details">
@@ -410,7 +417,7 @@ export default function DexPage() {
 
               <div className="row">
                 <input className="input" value={xtzIn} onChange={(event) => { setXtzIn(event.target.value); setActiveLiquidityPreset(null); }} type="number" placeholder="0.00" />
-                <div className="token">XTZ</div>
+                {currencyUnit("XTZ", XTZ_LOGO_URL)}
               </div>
             </div>
 
@@ -436,7 +443,7 @@ export default function DexPage() {
               </div>
               <div className="row">
                 <input className="input" readOnly value={matchingToken ? formatUnits(matchingToken, pool?.token.decimals ?? 0, 6) : ""} placeholder="0.00" />
-                <div className="token">{pool?.token.symbol ?? "BRO"}</div>
+                {currencyUnit(pool?.token.symbol ?? "BRO", pool?.token.imageUrl)}
               </div>
             </div>
 
