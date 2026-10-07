@@ -587,9 +587,7 @@ export default function DexPage() {
       {messages.join("\n")}
       {transaction && (
         <div>
-          <a href={transaction.url} target="_blank" rel="noreferrer">
-            View transaction {transaction.hash}
-          </a>
+          View transaction: <a href={transaction.url} target="_blank" rel="noreferrer">{transaction.hash}</a>
         </div>
       )}
     </div>
