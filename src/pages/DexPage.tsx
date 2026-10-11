@@ -2,26 +2,16 @@ import { useEffect, useMemo, useState } from "react";
 import { AnimatedLogo } from "../components/AnimatedLogo";
 import { LoadingButton, WalletBar } from "../components/Controls";
 import { getBakers } from "../shared/bakers";
-import { fetchTokenBalance, fetchTokenMetadata, type TokenMetadata } from "../shared/tokenMetadata";
+import { fetchDexPool, fetchXtzUsd, poolRatio, spotBroUsd, type DexPool } from "../shared/dex";
+import { fetchTokenBalance } from "../shared/tokenMetadata";
 import { formatUnits, parseUnits, toBigInt } from "../shared/units";
 import { isValidAddress, useWallet } from "../shared/tezos";
 import { ValidationResult, validateKeyHash } from "@taquito/utils";
-
-type Pool = {
-  contractAddress: string;
-  tokenAddress: string;
-  tokenId: string;
-  token: TokenMetadata;
-  xtzPool: bigint;
-  tokenPool: bigint;
-  totalShares: bigint;
-};
 
 type Direction = "xtz-bro" | "bro-xtz";
 
 const DEX_ADDRESS = import.meta.env.VITE_DEX_ADDRESS as string | undefined;
 const DELEGATION_ADDRESS = import.meta.env.VITE_DELEGATION_ADDRESS as string | undefined;
-const COINBASE_URL = "https://api.coinbase.com/v2/prices/XTZ-USD/spot";
 const XTZ_LOGO_URL = "https://services.tzkt.io/v1/avatars-dark/tz3UQN6nBQHofmgQ3pZannhiYE2CT7TEZFim";
 
 function money(value: number | null, digits = 2) {
@@ -34,7 +24,7 @@ function number(value: number | null, digits = 4) {
   return value === null || !Number.isFinite(value) ? "—" : value.toLocaleString(undefined, { maximumFractionDigits: digits });
 }
 
-function calculateOutput(pool: Pool, amount: bigint, direction: Direction) {
+function calculateOutput(pool: DexPool, amount: bigint, direction: Direction) {
   const input = direction === "xtz-bro" ? pool.xtzPool : pool.tokenPool;
   const output = direction === "xtz-bro" ? pool.tokenPool : pool.xtzPool;
   if (amount <= 0n || input <= 0n || output <= 0n) return 0n;
@@ -43,7 +33,7 @@ function calculateOutput(pool: Pool, amount: bigint, direction: Direction) {
 
 export default function DexPage() {
   const wallet = useWallet();
-  const [pool, setPool] = useState<Pool | null>(null);
+  const [pool, setPool] = useState<DexPool | null>(null);
   const [balances, setBalances] = useState<{ xtz: bigint | null; token: bigint | null }>({ xtz: null, token: null });
   const [xtzUsd, setXtzUsd] = useState<number | null>(null);
   const [direction, setDirection] = useState<Direction>("xtz-bro");
@@ -68,29 +58,12 @@ export default function DexPage() {
   }
 
   async function loadData() {
-    if (!DEX_ADDRESS || !isValidAddress(DEX_ADDRESS)) {
-      throw new Error("Set VITE_DEX_ADDRESS to a valid KT1 address.");
-    }
-    const [storageResponse, priceResponse] = await Promise.all([
-      fetch(`${wallet.selected.api}/v1/contracts/${DEX_ADDRESS}/storage`),
-      fetch(COINBASE_URL),
+    const [nextPool, price] = await Promise.all([
+      fetchDexPool(wallet.selected.api, DEX_ADDRESS),
+      fetchXtzUsd(),
     ]);
-    if (!storageResponse.ok) throw new Error(`DEX storage request failed (HTTP ${storageResponse.status}).`);
-    if (!priceResponse.ok) throw new Error(`Coinbase price request failed (HTTP ${priceResponse.status}).`);
-    const storage = await storageResponse.json();
-    const price = await priceResponse.json();
-    const tokenId = String(storage.token_id);
-    const token = await fetchTokenMetadata(wallet.selected.api, storage.token_address, tokenId);
-    setPool({
-      contractAddress: DEX_ADDRESS,
-      tokenAddress: storage.token_address,
-      tokenId,
-      token,
-      xtzPool: toBigInt(storage.xtz_pool),
-      tokenPool: toBigInt(storage.token_pool),
-      totalShares: toBigInt(storage.total_shares),
-    });
-    setXtzUsd(Number(price.data?.amount));
+    setPool(nextPool);
+    setXtzUsd(price);
     setMessages(["Pool data updated."]);
   }
 
@@ -134,9 +107,9 @@ export default function DexPage() {
   const amountIn = pool ? parseUnits(pay, directionDecimals) : null;
   const output = pool && amountIn ? calculateOutput(pool, amountIn, direction) : 0n;
   const minimum = output * BigInt(Math.round((100 - slippagePercent) * 100)) / 10000n;
-  const ratio = pool && pool.xtzPool > 0n ? Number(pool.tokenPool) / 10 ** pool.token.decimals / (Number(pool.xtzPool) / 1e6) : null;
+  const ratio = poolRatio(pool);
   const liquidityUsd = pool && xtzUsd !== null ? Number(pool.xtzPool) / 1e6 * xtzUsd * 2 : null;
-  const broUsd = ratio && xtzUsd !== null ? xtzUsd / ratio : null;
+  const broUsd = spotBroUsd(pool, xtzUsd);
   const priceImpact = pool && amountIn && output > 0n
     ? Math.max(0, 1 - Number(output) / Number((direction === "xtz-bro" ? pool.tokenPool : pool.xtzPool))) * 100
     : null;
