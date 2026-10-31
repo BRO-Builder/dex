@@ -31,6 +31,13 @@ function calculateOutput(pool: DexPool, amount: bigint, direction: Direction) {
   return output - (input * output) / (input + amount);
 }
 
+async function fetchUserShares(toolkit: any, contractAddress: string, owner: string) {
+  const contract: any = await toolkit.wallet.at(contractAddress);
+  const storage: any = await contract.storage();
+  const value = await storage.shares.get(owner);
+  return value ? toBigInt(value) : 0n;
+}
+
 export default function DexPage() {
   const wallet = useWallet();
   const [pool, setPool] = useState<DexPool | null>(null);
@@ -43,8 +50,8 @@ export default function DexPage() {
   const [activePreset, setActivePreset] = useState<number | null>(null);
   const [xtzIn, setXtzIn] = useState("");
   const [activeLiquidityPreset, setActiveLiquidityPreset] = useState<number | null>(null);
-  // Pool shares have no decimals. Wire userShares to the real share balance later (null = unknown / not connected).
-  const [userShares] = useState<bigint | null>(null); // add setUserShares when wiring
+  // Pool shares have no decimals. null = unknown / wallet not connected.
+  const [userShares, setUserShares] = useState<bigint | null>(null);
   const [sharesIn, setSharesIn] = useState("");
   const [activeRemovePreset, setActiveRemovePreset] = useState<number | null>(null);
   const [selectedBaker, setSelectedBaker] = useState("");
@@ -55,6 +62,7 @@ export default function DexPage() {
   const [loading, setLoading] = useState(true);
   const [swapping, setSwapping] = useState(false);
   const [addingLiquidity, setAddingLiquidity] = useState(false);
+  const [removingLiquidity, setRemovingLiquidity] = useState(false);
   const [authorizing, setAuthorizing] = useState(true);
   const [transaction, setTransaction] = useState<{ hash: string; url: string } | null>(null);
 
@@ -75,14 +83,17 @@ export default function DexPage() {
   async function loadBalances() {
     if (!wallet.address || !pool) {
       setBalances({ xtz: null, token: null });
+      setUserShares(null);
       return;
     }
     const { toolkit } = await wallet.ensureWallet();
-    const [xtz, token] = await Promise.all([
+    const [xtz, token, shares] = await Promise.all([
       toolkit.tz.getBalance(wallet.address).then(toBigInt),
       fetchTokenBalance(wallet.selected.api, wallet.address, pool.tokenAddress, pool.tokenId),
+      fetchUserShares(toolkit, pool.contractAddress, wallet.address),
     ]);
     setBalances({ xtz, token });
+    setUserShares(shares);
   }
 
   useEffect(() => {
@@ -95,6 +106,7 @@ export default function DexPage() {
   useEffect(() => {
     void loadBalances().catch((error) => {
       setBalances({ xtz: null, token: null });
+      setUserShares(null);
       log(`Unable to load wallet balances: ${error instanceof Error ? error.message : String(error)}`);
     });
   }, [wallet.address, pool?.tokenAddress, pool?.tokenId, wallet.selected.api]);
@@ -130,6 +142,9 @@ export default function DexPage() {
     ? pool.xtzPool * sharesToRemove / pool.totalShares : 0n;
   const removeToken = pool && sharesToRemove && sharesToRemove > 0n && pool.totalShares > 0n
     ? pool.tokenPool * sharesToRemove / pool.totalShares : 0n;
+  const removeMinXtz = removeXtz * BigInt(Math.round((100 - slippagePercent) * 100)) / 10000n;
+  const removeMinToken = removeToken * BigInt(Math.round((100 - slippagePercent) * 100)) / 10000n;
+  const canRemove = !!sharesToRemove && sharesToRemove > 0n && userShares !== null && sharesToRemove <= userShares && !!pool && pool.totalShares > 0n;
   const positionUsd = pool && userShares !== null && pool.totalShares > 0n && liquidityUsd !== null
     ? Number(userShares) / Number(pool.totalShares) * liquidityUsd : null;
 
@@ -217,6 +232,35 @@ export default function DexPage() {
       log(`Liquidity failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setAddingLiquidity(false);
+    }
+  }
+
+  async function removeLiquidity() {
+    if (!pool || !wallet.address || !sharesToRemove || !canRemove) return;
+    setRemovingLiquidity(true);
+    try {
+      const { toolkit } = await wallet.ensureWallet();
+      const dex: any = await toolkit.wallet.at(pool.contractAddress);
+      const operation: any = await dex.methodsObject.remove_liquidity({
+        shares: sharesToRemove.toString(),
+        min_xtz: removeMinXtz.toString(),
+        min_token: removeMinToken.toString(),
+      }).send();
+      log(`Remove liquidity submitted: ${operation.opHash}`);
+      await operation.confirmation();
+      setTransaction({
+        hash: operation.opHash,
+        url: `${wallet.selected.explorer}/${operation.opHash}`,
+      });
+      log("Liquidity removed.");
+      setSharesIn("");
+      setActiveRemovePreset(null);
+      await loadData();
+      await loadBalances();
+    } catch (error) {
+      log(`Remove liquidity failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setRemovingLiquidity(false);
     }
   }
 
@@ -497,7 +541,7 @@ export default function DexPage() {
                 <span id="shareBalance">Balance: {userShares === null ? "—" : `${userShares.toString()} SHARES`}</span>
               </div>
               <div className="row">
-                <input className="input" value={sharesIn} onChange={(event) => { setSharesIn(event.target.value); setActiveRemovePreset(null); }} type="number" min="0" step="any" placeholder="0.00" />
+                <input className="input" value={sharesIn} onChange={(event) => { setSharesIn(event.target.value); setActiveRemovePreset(null); }} type="number" min="0" step="1" placeholder="0" />
                 <div className="token">SHARES</div>
               </div>
             </div>
@@ -530,11 +574,23 @@ export default function DexPage() {
                 <span>Pool Share Removed</span>
                 <span>{removeFraction === null ? "—" : `${(removeFraction * 100).toFixed(4)}%`}</span>
               </div>
+              <div className="detail">
+                <span>Minimum Received</span>
+                <span>{removeXtz > 0n ? `${formatUnits(removeMinXtz, 6, 6)} XTZ + ${formatUnits(removeMinToken, pool?.token.decimals ?? 0, 6)} ${pool?.token.symbol ?? "BRO"}` : "—"}</span>
+              </div>
+              <div className="detail">
+                <span>Slippage</span>
+                <span>{slippagePercent.toFixed(2)}%</span>
+              </div>
+              <div className="slip">
+                { [0.5, 1, 2, 5].map((value) => (
+                  <button key={value} className={slippage === String(value) ? "active" : ""} onClick={() => setSlippage(String(value))}>{value}%</button>
+                )) }
+                <input className="custom" value={slippage} onChange={(event) => setSlippage(event.target.value)} placeholder="Custom" />
+              </div>
             </div>
 
-            {/* TODO: wire up the remove_liquidity entrypoint. */}
-            <LoadingButton className="primary mt-18" loading={false} disabled onClick={() => {}}>{wallet.address ? "Remove Liquidity" : "Connect Wallet to Remove Liquidity"}</LoadingButton>
-            <div className="notice">Actual liquidity transactions will be connected to the BRO pool contract.</div>
+            <LoadingButton className="primary mt-18" loading={removingLiquidity} disabled={loading || !wallet.address || !canRemove} onClick={() => void removeLiquidity()}>{wallet.address ? "Remove Liquidity" : "Connect Wallet to Remove Liquidity"}</LoadingButton>
           </div>
             ) }
           </section>
