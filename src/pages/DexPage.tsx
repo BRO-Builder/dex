@@ -38,10 +38,15 @@ export default function DexPage() {
   const [xtzUsd, setXtzUsd] = useState<number | null>(null);
   const [direction, setDirection] = useState<Direction>("xtz-bro");
   const [tab, setTab] = useState<"swap" | "liquidity">("swap");
+  const [liquidityTab, setLiquidityTab] = useState<"add" | "remove">("add");
   const [pay, setPay] = useState("");
   const [activePreset, setActivePreset] = useState<number | null>(null);
   const [xtzIn, setXtzIn] = useState("");
   const [activeLiquidityPreset, setActiveLiquidityPreset] = useState<number | null>(null);
+  // Pool shares have no decimals. Wire userShares to the real share balance later (null = unknown / not connected).
+  const [userShares] = useState<bigint | null>(null); // add setUserShares when wiring
+  const [sharesIn, setSharesIn] = useState("");
+  const [activeRemovePreset, setActiveRemovePreset] = useState<number | null>(null);
   const [selectedBaker, setSelectedBaker] = useState("");
   const [customBaker, setCustomBaker] = useState("");
   const [bakerModalOpen, setBakerModalOpen] = useState(false);
@@ -117,6 +122,16 @@ export default function DexPage() {
   const matchingToken = pool && liquidityToken && pool.xtzPool > 0n ? pool.tokenPool * liquidityToken / pool.xtzPool : 0n;
   const sharePercent = pool && liquidityToken && pool.xtzPool + liquidityToken > 0n
     ? Number(liquidityToken) / Number(pool.xtzPool + liquidityToken) * 100 : null;
+
+  const sharesToRemove = parseUnits(sharesIn, 0);
+  const removeFraction = pool && sharesToRemove && sharesToRemove > 0n && pool.totalShares > 0n
+    ? Number(sharesToRemove) / Number(pool.totalShares) : null;
+  const removeXtz = pool && sharesToRemove && sharesToRemove > 0n && pool.totalShares > 0n
+    ? pool.xtzPool * sharesToRemove / pool.totalShares : 0n;
+  const removeToken = pool && sharesToRemove && sharesToRemove > 0n && pool.totalShares > 0n
+    ? pool.tokenPool * sharesToRemove / pool.totalShares : 0n;
+  const positionUsd = pool && userShares !== null && pool.totalShares > 0n && liquidityUsd !== null
+    ? Number(userShares) / Number(pool.totalShares) * liquidityUsd : null;
 
   async function swap() {
     if (!pool || !wallet.address || !amountIn || amountIn <= 0n) return;
@@ -263,6 +278,13 @@ export default function DexPage() {
     setActiveLiquidityPreset(percent);
   };
 
+  const setRemoveAmountPercent = (percent: number) => {
+    if (userShares === null) return;
+    const amount = userShares * BigInt(percent) / 100n;
+    setSharesIn(amount > 0n ? amount.toString() : "");
+    setActiveRemovePreset(percent);
+  };
+
   return <main className="wrap">
     <div className="brand">
       <AnimatedLogo />
@@ -375,6 +397,13 @@ export default function DexPage() {
 
         { tab === "liquidity" && (
           <section>
+            <div className="subtabs">
+              <button type="button" className={liquidityTab === "add" ? "subtab active" : "subtab"} onClick={() => setLiquidityTab("add")}>ADD</button>
+              <button type="button" className={liquidityTab === "remove" ? "subtab active" : "subtab"} onClick={() => setLiquidityTab("remove")}>REMOVE</button>
+            </div>
+
+            { liquidityTab === "add" && (
+          <div className="liqpanel active">
             <h2>Add Liquidity</h2>
             <div className="desc">Supply {pool?.token.symbol ?? "BRO"} and XTZ to the pool at the current ratio.</div>
             <div className="liquidity">
@@ -450,6 +479,64 @@ export default function DexPage() {
               Authorize the DEX in the same transaction
             </label>
             <LoadingButton className="primary mt-18" loading={addingLiquidity} disabled={loading || !pool || !wallet.address || !liquidityToken || liquidityToken <= 0n || matchingToken <= 0n} onClick={() => void addLiquidity()}>{wallet.address ? "Add Liquidity" : "Connect Wallet to Add Liquidity"}</LoadingButton>
+          </div>
+            ) }
+
+            { liquidityTab === "remove" && (
+          <div className="liqpanel active">
+            <h2>Remove Liquidity</h2>
+            <div className="desc">Burn pool shares to withdraw your {pool?.token.symbol ?? "BRO"} and XTZ at the current ratio.</div>
+            <div className="liquidity">
+              <div className="liqbig">{money(positionUsd)}</div>
+              <div className="liqsub">Your position value</div>
+            </div>
+
+            <div className="box">
+              <div className="top">
+                <span>Pool Shares to Remove</span>
+                <span id="shareBalance">Balance: {userShares === null ? "—" : `${userShares.toString()} SHARES`}</span>
+              </div>
+              <div className="row">
+                <input className="input" value={sharesIn} onChange={(event) => { setSharesIn(event.target.value); setActiveRemovePreset(null); }} type="number" min="0" step="any" placeholder="0.00" />
+                <div className="token">SHARES</div>
+              </div>
+            </div>
+
+            <div className="amount-presets">
+              {[25, 50, 75, 100].map((percent) => (
+                <button
+                  type="button"
+                  className={activeRemovePreset === percent ? "amount-preset active" : "amount-preset"}
+                  data-percent={percent}
+                  disabled={!wallet.address || userShares === null}
+                  onClick={() => setRemoveAmountPercent(percent)}
+                  key={percent}
+                >
+                  {percent === 100 ? "MAX" : `${percent}%`}
+                </button>
+              ))}
+            </div>
+
+            <div className="details">
+              <div className="detail">
+                <span>You Receive (XTZ)</span>
+                <span>{removeXtz > 0n ? `${formatUnits(removeXtz, 6, 6)} XTZ` : "—"}</span>
+              </div>
+              <div className="detail">
+                <span>You Receive ({pool?.token.symbol ?? "BRO"})</span>
+                <span>{removeToken > 0n ? `${formatUnits(removeToken, pool?.token.decimals ?? 0, 6)} ${pool?.token.symbol ?? "BRO"}` : "—"}</span>
+              </div>
+              <div className="detail">
+                <span>Pool Share Removed</span>
+                <span>{removeFraction === null ? "—" : `${(removeFraction * 100).toFixed(4)}%`}</span>
+              </div>
+            </div>
+
+            {/* TODO: wire up the remove_liquidity entrypoint. */}
+            <LoadingButton className="primary mt-18" loading={false} disabled onClick={() => {}}>{wallet.address ? "Remove Liquidity" : "Connect Wallet to Remove Liquidity"}</LoadingButton>
+            <div className="notice">Actual liquidity transactions will be connected to the BRO pool contract.</div>
+          </div>
+            ) }
           </section>
         ) }
       </div>
