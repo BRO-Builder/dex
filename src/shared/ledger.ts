@@ -86,7 +86,7 @@ export type MarketStorage = {
   admin: string;
   oracle: string;
   ledger: string | null;
-  dex: string;
+  fundingWallet: string;
   tokenAddress: string;
   tokenId: string;
   price: bigint;
@@ -202,7 +202,7 @@ export async function fetchMarketStorage(api: string, address: string): Promise<
     admin: storage.admin,
     oracle: storage.oracle,
     ledger: storage.ledger ?? null,
-    dex: storage.dex,
+    fundingWallet: storage.funding_wallet,
     tokenAddress: storage.token_address,
     tokenId: String(storage.token_id),
     price: toBigInt(storage.price),

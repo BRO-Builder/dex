@@ -572,7 +572,7 @@ export default function BuildPoolPage() {
         <div className="poolrow"><span>Projects Listed</span><strong>{projects.length}</strong></div>
         <div className="poolrow"><span>Residential / Commercial</span><strong>{stats.residential} / {stats.commercial}</strong></div>
         <div className="poolrow"><span>Still to Fund</span><strong>{formatCents(stats.toFund)}</strong></div>
-        <div className="poolrow"><span>Price Reserve</span><strong>{market.market ? formatBro(market.market.reserve, decimals, 0) : "—"}</strong></div>
+        <div className="poolrow"><span>Funding Wallet Balance</span><strong>{market.market ? formatBro(market.market.reserve, decimals, 0) : "—"}</strong></div>
         <div className="poolrow"><span>Late Fee</span><strong>{ledger.storage ? `${bpsToPct(ledger.storage.funding.lateFeeBpsPerDay)} / day` : "—"}</strong></div>
       </div>
     </div>

@@ -82,7 +82,7 @@ export default function ApproverPage() {
     ops.setReview({
       title: `Mark #${project.id} as defaulted`,
       text: `Ends the project. Unclaimed escrow (${formatBro(unclaimed, decimals)}) and the BRO repaid so far (${formatBro(project.repaidBro, decimals)}) `
-        + "become the investors' pool, and the market assistant tops it up as far as its reserve allows. This can't be undone.",
+        + "become the investors' pool, and the funding wallet tops it up as far as its balance allows. This can't be undone.",
       steps: [{ contract: PROJECTS_ADDRESS, entrypoint: "mark_default", params: String(project.id) }],
       onDone: () => {
         ops.showToast(`#${project.id} marked as defaulted.`);

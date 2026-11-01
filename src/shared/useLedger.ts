@@ -6,10 +6,10 @@ import type { useWallet } from "./tezos";
 export function useLedger(wallet: ReturnType<typeof useWallet>) {
   const [storage, setStorage] = useState<LedgerStorage | null>(null);
   const [projects, setProjects] = useState<Project[] | null>(null);
-  const [error, setError] = useState<string | null>(configError("funding", "projects", "dex"));
+  const [error, setError] = useState<string | null>(configError("funding", "projects"));
 
   async function reload() {
-    if (configError("funding", "projects", "dex")) return;
+    if (configError("funding", "projects")) return;
     try {
       const [nextStorage, nextProjects] = await Promise.all([
         fetchLedgerStorage(wallet.selected.api),

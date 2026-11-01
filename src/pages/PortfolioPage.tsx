@@ -34,7 +34,7 @@ export default function PortfolioPage() {
   const staleMessage = "The BRO price on the market assistant is out of date, so the contract would reject this. Try again after the oracle updates it.";
 
   /** Why a claim of these milestones would fail now, or null. The contractor gets BRO worth the
-   * milestones' net USD; when that exceeds their escrow, the market assistant's reserve pays the rest. */
+   * milestones' net USD; when that exceeds their escrow, the funding wallet pays the rest. */
   function claimBlocker(ready: Milestone[]) {
     if (!market.market || !market.price) return "The market assistant isn't loaded yet.";
     if (market.stale) return staleMessage;
@@ -43,7 +43,7 @@ export default function PortfolioPage() {
     if (shortfall <= 0n) return null;
     if (ledgerUnlinked) return "The market assistant isn't linked to the projects contract, so it can't cover this claim's shortfall.";
     if (shortfall > market.market.reserve) {
-      return `The BRO price has fallen since funding, and the market assistant's reserve (${formatBro(market.market.reserve, decimals)}) `
+      return `The BRO price has fallen since funding, and the funding wallet's balance (${formatBro(market.market.reserve, decimals)}) `
         + `can't cover the ${formatBro(shortfall, decimals)} shortfall yet.`;
     }
     return null;
@@ -156,7 +156,7 @@ export default function PortfolioPage() {
     {projectsPaused && <ConfigError message="Projects are paused by their admin. Milestone claims, repayments and payouts are disabled for now." />}
     <ConfigError message={market.error} />
     {market.stale && <ConfigError message="The BRO price on the market assistant is out of date, so milestone claims and repayments are disabled until the oracle updates it." />}
-    {ledgerUnlinked && <ConfigError message="The market assistant isn't linked to the projects contract, so claims and settlements that need its reserve will fail. The market admin can link it on the BRO Builder Web3 Portal's projects setup page." />}
+    {ledgerUnlinked && <ConfigError message="The market assistant isn't linked to the projects contract, so claims and settlements that need the funding wallet will fail. The market admin can link it on the BRO Builder Web3 Portal's projects setup page." />}
     {!wallet.address && !ledger.error && (
       <div className="card"><div className="empty">Connect your wallet to see your investments and projects.</div></div>
     )}
