@@ -297,7 +297,7 @@ export default function DexPage() {
   const payBalance = direction === "xtz-bro" ? balances.xtz : balances.token;
   const receiveBalance = direction === "xtz-bro" ? balances.token : balances.xtz;
   const formatBalance = (value: bigint | null, decimals: number, symbol: string) =>
-    value === null ? "—" : `${formatUnits(value, decimals, 6)} ${symbol}`;
+    value === null ? "—" : `${formatUnits(value, decimals)} ${symbol}`;
   const currencyUnit = (symbol: string, imageUrl?: string) => (
     <div className="token">
       <img className="token-logo" src={imageUrl} alt="" aria-hidden="true" />
@@ -307,18 +307,20 @@ export default function DexPage() {
   const bakers = getBakers(wallet.network);
   const setAmountPercent = (percent: number) => {
     if (payBalance === null) return;
-    const feeReserve = direction === "xtz-bro" && percent === 100 ? 100000n : 0n;
+    const feeReserve = direction === "xtz-bro" ? 100000n : 0n;
     const available = payBalance > feeReserve ? payBalance - feeReserve : 0n;
     const amount = available * BigInt(percent) / 100n;
-    setPay(amount > 0n ? formatUnits(amount, directionDecimals, 8) : "");
+    setPay(amount > 0n ? formatUnits(amount, directionDecimals) : "");
     setActivePreset(percent);
   };
   const setLiquidityAmountPercent = (percent: number) => {
-    if (balances.xtz === null) return;
+    if (balances.xtz === null || balances.token === null || !pool || pool.xtzPool <= 0n || pool.tokenPool <= 0n) return;
     const feeReserve = percent === 100 ? 100000n : 0n;
-    const available = balances.xtz > feeReserve ? balances.xtz - feeReserve : 0n;
+    const availableXtz = balances.xtz > feeReserve ? balances.xtz - feeReserve : 0n;
+    const availableFromToken = balances.token * pool.xtzPool / pool.tokenPool;
+    const available = availableXtz < availableFromToken ? availableXtz : availableFromToken;
     const amount = available * BigInt(percent) / 100n;
-    setXtzIn(amount > 0n ? formatUnits(amount, 6, 8) : "");
+    setXtzIn(amount > 0n ? formatUnits(amount, 6) : "");
     setActiveLiquidityPreset(percent);
   };
 
@@ -473,7 +475,7 @@ export default function DexPage() {
                   type="button"
                   className={activeLiquidityPreset === percent ? "amount-preset active" : "amount-preset"}
                   data-percent={percent}
-                  disabled={!wallet.address || balances.xtz === null}
+                  disabled={!wallet.address || balances.xtz === null || balances.token === null || !pool}
                   onClick={() => setLiquidityAmountPercent(percent)}
                   key={percent}
                 >
