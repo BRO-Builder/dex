@@ -10,6 +10,11 @@ export const BAKERS_BY_NETWORK: Record<"mainnet" | "shadownet", Baker[]> = {
       label: "BRO Builder LLC",
       keyHash: "tz3SWuUUY48j43ATzd1hpCy4X726PYR3fEXT",
       logo: "https://www.brobuilder.llc/images/nav-icon-baker.png"
+    },
+    {
+      label: "StorryTV Baker",
+      keyHash: "tz1eo3APJNdYst3mu7axpyZsJBPEqwxm8Sv1",
+      logo: "https://services.tzkt.io/v1/avatars-dark/tz1eo3APJNdYst3mu7axpyZsJBPEqwxm8Sv1"
     }
   ],
   shadownet: [
