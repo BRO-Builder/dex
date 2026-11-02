@@ -4,7 +4,12 @@ export type Baker = {
 };
 
 export const BAKERS_BY_NETWORK: Record<"mainnet" | "shadownet", Baker[]> = {
-  mainnet: [],
+  mainnet: [
+    {
+      label: "BRO Builder LLC",
+      keyHash: "tz3SWuUUY48j43ATzd1hpCy4X726PYR3fEXT"
+    }
+  ],
   shadownet: [],
 };
 
