@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { AnimatedLogo } from "../components/AnimatedLogo";
+import { BakerAvatar } from "../components/BakerAvatar";
 import { LoadingButton, WalletBar } from "../components/Controls";
 import { getBakers } from "../shared/bakers";
 import { fetchDexPool, fetchXtzUsd, poolRatio, spotBroUsd, type DexPool } from "../shared/dex";
@@ -305,6 +306,10 @@ export default function DexPage() {
     </div>
   );
   const bakers = getBakers(wallet.network);
+  const trimmedCustomBaker = customBaker.trim();
+  const customBakerValid = trimmedCustomBaker !== "" && validateKeyHash(trimmedCustomBaker) === ValidationResult.VALID;
+  const selectedBakerInfo = bakers.find((baker) => baker.keyHash === selectedBaker);
+
   const setAmountPercent = (percent: number) => {
     if (payBalance === null) return;
     const feeReserve = direction === "xtz-bro" ? 100000n : 0n;
@@ -514,7 +519,19 @@ export default function DexPage() {
                   <span>Optional</span>
                 </div>
                 <div className="baker-summary">
-                  {customBaker || (selectedBaker && bakers.find((baker) => baker.keyHash === selectedBaker)?.label) || "No baker selected"}
+                  {customBakerValid ? (
+                    <>
+                      <BakerAvatar keyHash={trimmedCustomBaker} label="Custom" />
+                      <span>{trimmedCustomBaker}</span>
+                    </>
+                  ) : selectedBakerInfo ? (
+                    <>
+                      <BakerAvatar keyHash={selectedBakerInfo.keyHash} label={selectedBakerInfo.label} logo={selectedBakerInfo.logo} />
+                      <span>{selectedBakerInfo.label}</span>
+                    </>
+                  ) : (
+                    customBaker || "No baker selected"
+                  )}
                 </div>
               </div>
               <button type="button" className="secondary" onClick={() => setBakerModalOpen(true)}>Choose baker</button>
@@ -661,21 +678,28 @@ export default function DexPage() {
             </div>
             <button type="button" className="modal-close" aria-label="Close baker selection" onClick={() => setBakerModalOpen(false)}>×</button>
           </div>
-          <label className="modal-label" htmlFor="baker-select">Configured baker</label>
-          <select
-            id="baker-select"
-            className="baker-select"
-            value={selectedBaker}
-            onChange={(event) => {
-              setSelectedBaker(event.target.value);
-              setCustomBaker("");
-            }}
-          >
-            <option value="">Select a configured baker</option>
+          <div className="modal-label" id="baker-list-label">Configured baker</div>
+          <div className="baker-list" role="listbox" aria-labelledby="baker-list-label">
             {bakers.map((baker) => (
-              <option key={baker.keyHash} value={baker.keyHash}>{baker.label}</option>
+              <button
+                type="button"
+                role="option"
+                aria-selected={selectedBaker === baker.keyHash}
+                key={baker.keyHash}
+                className={selectedBaker === baker.keyHash ? "baker-option active" : "baker-option"}
+                onClick={() => {
+                  setSelectedBaker(baker.keyHash);
+                  setCustomBaker("");
+                }}
+              >
+                <BakerAvatar keyHash={baker.keyHash} label={baker.label} logo={baker.logo} />
+                <span className="baker-option-text">
+                  <span className="baker-option-label">{baker.label}</span>
+                  <span className="baker-option-hash">{baker.keyHash.slice(0, 7)}…{baker.keyHash.slice(-4)}</span>
+                </span>
+              </button>
             ))}
-          </select>
+          </div>
           <div className="modal-or">or</div>
           <label className="modal-label" htmlFor="custom-baker">Custom baker key hash</label>
           <input
@@ -689,6 +713,12 @@ export default function DexPage() {
             placeholder="tz1, tz2, or tz3 key hash"
             spellCheck={false}
           />
+          {customBakerValid && (
+            <div className="baker-summary baker-preview">
+              <BakerAvatar keyHash={trimmedCustomBaker} label="Custom" />
+              <span>{trimmedCustomBaker.slice(0, 7)}…{trimmedCustomBaker.slice(-4)}</span>
+            </div>
+          )}
           <div className="modal-actions">
             <button type="button" className="secondary" onClick={() => {
               setSelectedBaker("");
