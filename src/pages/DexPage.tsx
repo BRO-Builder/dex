@@ -65,9 +65,19 @@ export default function DexPage() {
   const [addingLiquidity, setAddingLiquidity] = useState(false);
   const [removingLiquidity, setRemovingLiquidity] = useState(false);
   const [transaction, setTransaction] = useState<{ hash: string; url: string } | null>(null);
+  const [voteConfirm, setVoteConfirm] = useState<{ baker: string; resolve: (ok: boolean) => void } | null>(null);
 
   function log(message: string) {
     setMessages((current) => [...current.slice(-4), message]);
+  }
+
+  function confirmBakerVote(baker: string) {
+    return new Promise<boolean>((resolve) => setVoteConfirm({ baker, resolve }));
+  }
+
+  function closeVoteConfirm(ok: boolean) {
+    voteConfirm?.resolve(ok);
+    setVoteConfirm(null);
   }
 
   async function buildOperatorCalls(toolkit: any, tokenAddress: string, tokenId: any, owner: string, operator: string) {
@@ -124,6 +134,13 @@ export default function DexPage() {
     }, 60000);
     return () => window.clearInterval(interval);
   }, [wallet.selected.api]);
+
+  useEffect(() => {
+    if (!voteConfirm) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") closeVoteConfirm(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [voteConfirm]);
 
   const slippagePercent = Math.max(0, Math.min(50, Number(slippage) || 0));
   const directionDecimals = direction === "xtz-bro" ? 6 : pool?.token.decimals ?? 0;
@@ -268,7 +285,7 @@ export default function DexPage() {
       log("Baker vote skipped: enter a valid Tezos key hash.");
       return;
     }
-    if (!window.confirm(`Vote your liquidity shares for ${baker}?`)) {
+    if (!(await confirmBakerVote(baker))) {
       log("Baker vote skipped.");
       return;
     }
@@ -712,6 +729,35 @@ export default function DexPage() {
         </div>
       </div>
     )}
+
+    {voteConfirm && (() => {
+      const info = bakers.find((baker) => baker.keyHash === voteConfirm.baker);
+      return (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) closeVoteConfirm(false);
+        }}>
+          <div className="modal" role="alertdialog" aria-modal="true" aria-labelledby="vote-modal-title" aria-describedby="vote-modal-desc">
+            <div className="modal-header">
+              <div>
+                <h2 id="vote-modal-title">Confirm baker vote</h2>
+                <div className="desc" id="vote-modal-desc">
+                  Your liquidity shares will be voted for this baker. Your wallet will ask you to approve the transaction.
+                </div>
+              </div>
+              <button type="button" className="modal-close" aria-label="Cancel vote" onClick={() => closeVoteConfirm(false)}>×</button>
+            </div>
+            <div className="baker-summary baker-preview">
+              <BakerAvatar keyHash={voteConfirm.baker} label={info?.label ?? "Custom"} logo={info?.logo} />
+              <span>{info ? `${info.label} (${voteConfirm.baker.slice(0, 7)}…${voteConfirm.baker.slice(-4)})` : voteConfirm.baker}</span>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="secondary" onClick={() => closeVoteConfirm(false)}>Skip vote</button>
+              <button type="button" className="primary" autoFocus onClick={() => closeVoteConfirm(true)}>Confirm vote</button>
+            </div>
+          </div>
+        </div>
+      );
+    })()}
 
     <div className="status">
       {messages.join("\n")}
