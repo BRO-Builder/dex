@@ -64,11 +64,17 @@ export default function DexPage() {
   const [swapping, setSwapping] = useState(false);
   const [addingLiquidity, setAddingLiquidity] = useState(false);
   const [removingLiquidity, setRemovingLiquidity] = useState(false);
-  const [authorizing, setAuthorizing] = useState(true);
   const [transaction, setTransaction] = useState<{ hash: string; url: string } | null>(null);
 
   function log(message: string) {
     setMessages((current) => [...current.slice(-4), message]);
+  }
+
+  async function buildOperatorCalls(toolkit: any, tokenAddress: string, tokenId: any, owner: string, operator: string) {
+    const token: any = await toolkit.wallet.at(tokenAddress);
+    const update = (kind: "add_operator" | "remove_operator") =>
+      token.methodsObject.update_operators([{ [kind]: { owner, operator, token_id: tokenId } }]);
+    return { authorize: update("add_operator"), revoke: update("remove_operator") };
   }
 
   async function loadData() {
@@ -91,7 +97,7 @@ export default function DexPage() {
     const [xtz, token, shares] = await Promise.all([
       toolkit.tz.getBalance(wallet.address).then(toBigInt),
       fetchTokenBalance(wallet.selected.api, wallet.address, pool.tokenAddress, pool.tokenId),
-      fetchUserShares(toolkit, pool.contractAddress, wallet.address),
+      fetchUserShares(toolkit, pool.contractAddress, wallet.address)
     ]);
     setBalances({ xtz, token });
     setUserShares(shares);
@@ -163,19 +169,14 @@ export default function DexPage() {
           token_amount: amountIn.toString(),
           min_xtz_out: minimum.toString(),
         });
-        if (authorizing) {
-          const token: any = await toolkit.wallet.at(pool.tokenAddress);
-          const authorize = token.methodsObject.update_operators([{
-            add_operator: {
-              owner: wallet.address,
-              operator: pool.contractAddress,
-              token_id: pool.tokenId
-            },
-          }]);
-          operation = await toolkit.wallet.batch().withContractCall(authorize).withContractCall(call).send();
-        } else {
-          operation = await call.send();
-        }
+        const { authorize, revoke } = await buildOperatorCalls(
+          toolkit, pool.tokenAddress, pool.tokenId, wallet.address, pool.contractAddress,
+        );
+        operation = await toolkit.wallet.batch()
+          .withContractCall(authorize)
+          .withContractCall(call)
+          .withContractCall(revoke)
+          .send();
       }
       log(`Swap submitted: ${operation.opHash}`);
       await operation.confirmation();
@@ -201,23 +202,14 @@ export default function DexPage() {
       const { toolkit } = await wallet.ensureWallet();
       const dex: any = await toolkit.wallet.at(pool.contractAddress);
       const call = dex.methodsObject.add_liquidity("0");
-      let operation: any;
-      if (authorizing) {
-        const token: any = await toolkit.wallet.at(pool.tokenAddress);
-        const authorize = token.methodsObject.update_operators([{
-          add_operator: {
-            owner: wallet.address,
-            operator: pool.contractAddress,
-            token_id: pool.tokenId
-          },
-        }]);
-        operation = await toolkit.wallet.batch()
-          .withContractCall(authorize)
-          .withTransfer(call.toTransferParams({ amount: Number(liquidityToken), mutez: true }))
-          .send();
-      } else {
-        operation = await call.send({ amount: Number(liquidityToken), mutez: true });
-      }
+      const { authorize, revoke } = await buildOperatorCalls(
+        toolkit, pool.tokenAddress, pool.tokenId, wallet.address, pool.contractAddress,
+      );
+      const operation: any = await toolkit.wallet.batch()
+        .withContractCall(authorize)
+        .withTransfer(call.toTransferParams({ amount: Number(liquidityToken), mutez: true }))
+        .withContractCall(revoke)
+        .send();
       log(`Liquidity submitted: ${operation.opHash}`);
       await operation.confirmation();
       setTransaction({
@@ -436,12 +428,6 @@ export default function DexPage() {
               </div>
             </div>
 
-            { direction === "bro-xtz" && (
-              <label className="check">
-                <input type="checkbox" checked={authorizing} onChange={(event) => setAuthorizing(event.target.checked)} />
-                Authorize the DEX in the same transaction
-              </label>
-            ) }
             <LoadingButton className="primary mt-18" loading={swapping} disabled={loading || !pool || !wallet.address || !amountIn || amountIn <= 0n} onClick={() => void swap()}>{wallet.address ? "Swap" : "Connect Wallet to Swap"}</LoadingButton>
           </section>
         ) }
@@ -537,10 +523,6 @@ export default function DexPage() {
               <button type="button" className="secondary" onClick={() => setBakerModalOpen(true)}>Choose baker</button>
             </div>
 
-            <label className="check">
-              <input type="checkbox" checked={authorizing} onChange={(event) => setAuthorizing(event.target.checked)} />
-              Authorize the DEX in the same transaction
-            </label>
             <LoadingButton className="primary mt-18" loading={addingLiquidity} disabled={loading || !pool || !wallet.address || !liquidityToken || liquidityToken <= 0n || matchingToken <= 0n} onClick={() => void addLiquidity()}>{wallet.address ? "Add Liquidity" : "Connect Wallet to Add Liquidity"}</LoadingButton>
           </div>
             ) }
