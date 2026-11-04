@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { ConfigError, PoolShell, useOperations } from "../components/PoolShell";
 import {
   PROJECTS_ADDRESS, STATUS_LABELS, bpsToPct, defaultableAt, formatBro, formatCents, formatDate, formatDateTime,
-  lateFeePreview, termEnd, type Project,
+  lateFee, lateFeeStart, toTimestamp, type Project,
 } from "../shared/ledger";
 import { fetchTokenBalance } from "../shared/tokenMetadata";
 import { useLedger } from "../shared/useLedger";
@@ -50,6 +50,7 @@ export default function ApproverPage() {
 
   const canAct = role === "admin" || role === "nft";
   const pending = projects.filter((project) => project.status === "Active" && project.currentMilestone < project.milestones.length);
+  const proposals = projects.filter((project) => (project.status === "Active" || project.status === "Repaying") && project.proposedEndDate);
   const watch = storage
     ? projects
       .map((project) => ({ project, at: defaultableAt(project, storage.graceDays) }))
@@ -59,18 +60,46 @@ export default function ApproverPage() {
 
   function approve(project: Project) {
     if (!PROJECTS_ADDRESS) return;
-    const preview = lateFeePreview(project);
-    if (!preview) return;
+    const ms = project.milestones[project.currentMilestone];
+    if (!ms) return;
     ops.setReview({
-      title: `Approve M${preview.milestone.index + 1} on #${project.id}`,
-      text: `Approves "${preview.milestone.description}". `
-        + (preview.lateDays > 0
-          ? `It is ${preview.lateDays} day${preview.lateDays === 1 ? "" : "s"} late, so ${bpsToPct(preview.feeBps)} (${formatCents(preview.feeUsd)}) is deducted; `
-          : "It is on time; ")
-        + `the contractor can claim ${formatCents(preview.netUsd)}. The fee is counted when the operation is included, so it can grow if a day boundary passes first.`,
+      title: `Approve M${ms.index + 1} on #${project.id}`,
+      text: `Approves "${ms.description}". The contractor can then claim its full ${formatCents(ms.usd)}; there is no fee for a late approval.`
+        + (ms.index + 1 < project.milestones.length ? ` M${ms.index + 2} falls due ${project.milestones[ms.index + 1].durationDays} days after this approval.` : ""),
       steps: [{ contract: PROJECTS_ADDRESS, entrypoint: "approve_milestone", params: String(project.id) }],
       onDone: () => {
-        ops.showToast(`Approved M${preview.milestone.index + 1} on #${project.id}.`);
+        ops.showToast(`Approved M${ms.index + 1} on #${project.id}.`);
+        void ledger.reload();
+      },
+    });
+  }
+
+  function approveEndDate(project: Project) {
+    if (!PROJECTS_ADDRESS || !project.proposedEndDate || !storage) return;
+    const proposed = project.proposedEndDate;
+    ops.setReview({
+      title: `Approve end date for #${project.id}`,
+      text: `Sets the end date to ${formatDateTime(proposed)}`
+        + (project.endDate ? `, replacing ${formatDateTime(project.endDate)}` : "")
+        + `. The late fee and default start after it plus the ${storage.graceDays}-day grace period.`
+        + (proposed < now ? " This date is already in the past." : "")
+        + " If the contractor changes the proposal before this is included, the approval fails.",
+      steps: [{ contract: PROJECTS_ADDRESS, entrypoint: "approve_end_date", params: { project_id: String(project.id), end_date: toTimestamp(proposed) } }],
+      onDone: () => {
+        ops.showToast(`End date approved for #${project.id}.`);
+        void ledger.reload();
+      },
+    });
+  }
+
+  function rejectEndDate(project: Project) {
+    if (!PROJECTS_ADDRESS) return;
+    ops.setReview({
+      title: `Reject end date for #${project.id}`,
+      text: `Drops the proposed ${formatDateTime(project.proposedEndDate)}. ${project.endDate ? `The approved end date ${formatDateTime(project.endDate)} stays in force.` : "The project still has no approved end date."}`,
+      steps: [{ contract: PROJECTS_ADDRESS, entrypoint: "reject_end_date", params: String(project.id) }],
+      onDone: () => {
+        ops.showToast(`Proposal rejected for #${project.id}.`);
         void ledger.reload();
       },
     });
@@ -98,7 +127,7 @@ export default function ApproverPage() {
         : role === "none" ? "This wallet is not the projects admin and doesn't hold the approver NFT, so it can't approve or default projects."
           : "Checking approver status...";
 
-  return <PoolShell wallet={wallet} active="approver" title="Approver" subtitle="Approve milestones and handle overdue projects.">
+  return <PoolShell wallet={wallet} active="approver" title="Approver" subtitle="Approve milestones and end dates, and handle overdue projects.">
     <ConfigError message={ledger.error} />
     <div className="card">
       <div className="poolrow"><span>Your Role</span><strong>{roleText}</strong></div>
@@ -109,13 +138,11 @@ export default function ApproverPage() {
     <div className="grid">
       <div className="card">
         <h2>Pending Milestones</h2>
-        <div className="desc">The current milestone of each project in progress. Late days are rounded up and charged at the rate fixed when the project was submitted.</div>
+        <div className="desc">The current milestone of each project in progress. Approving pays the contractor the milestone's full amount, even when it is late.</div>
         {ledger.projects === null && !ledger.error && <div className="empty">Loading projects...</div>}
         {ledger.projects !== null && pending.length === 0 && <div className="empty">No milestones are waiting for approval.</div>}
         {pending.map((project) => {
-          const preview = lateFeePreview(project, now);
-          if (!preview) return null;
-          const ms = preview.milestone;
+          const ms = project.milestones[project.currentMilestone];
           return (
             <div className="loan" key={project.id}>
               <div className="loan-head">
@@ -127,12 +154,8 @@ export default function ApproverPage() {
               </div>
               <div className="detail"><span>Milestone</span><span>{ms.description}</span></div>
               <div className="detail"><span>Amount</span><span>{formatCents(ms.usd)} ({bpsToPct(ms.pctBps)})</span></div>
-              <div className="detail"><span>Due</span><span>{formatDateTime(ms.dueAt)}</span></div>
-              <div className="detail">
-                <span>Late Fee Now</span>
-                <span>{preview.lateDays > 0 ? `${preview.lateDays} day${preview.lateDays === 1 ? "" : "s"} × ${bpsToPct(project.lateFeeBpsPerDay)} = ${formatCents(preview.feeUsd)}` : "None (on time)"}</span>
-              </div>
-              <div className="detail total"><span>Contractor Receives</span><span>{formatCents(preview.netUsd)}</span></div>
+              <div className="detail"><span>Due</span><span>{formatDateTime(ms.dueAt)}{ms.dueAt && now > ms.dueAt ? " (late)" : ""}</span></div>
+              <div className="detail total"><span>Contractor Receives</span><span>{formatCents(ms.usd)}</span></div>
               <details className="more">
                 <summary>Scope &amp; contractor</summary>
                 <dl>
@@ -150,14 +173,44 @@ export default function ApproverPage() {
       </div>
 
       <div className="card">
+        <h2>End Date Proposals</h2>
+        <div className="desc">
+          Contractors propose their project's end date (at launch, the estimated completion from the listing). Only the projects admin can approve or reject.
+          The approved date stays in force until a new one is approved. After it plus the grace period, the contractor owes a late fee for every day since the end date, and the project can be defaulted.
+        </div>
+        {ledger.projects !== null && proposals.length === 0 && <div className="empty">No end dates are waiting for approval.</div>}
+        {proposals.map((project) => (
+          <div className="loan" key={project.id}>
+            <div className="loan-head">
+              <div>
+                <h3>{project.title}</h3>
+                <div className="loc">#{project.id} · {STATUS_LABELS[project.status]}</div>
+              </div>
+              <div className="loan-tags">{project.proposedEndDate && project.proposedEndDate < now && <span className="loan-tag gold">In the past</span>}</div>
+            </div>
+            <div className="detail"><span>Proposed</span><span>{formatDateTime(project.proposedEndDate)}</span></div>
+            <div className="detail"><span>Approved Now</span><span>{project.endDate ? formatDateTime(project.endDate) : "None"}</span></div>
+            <div className="detail"><span>Estimated Completion</span><span>{formatDate(project.estCompletion)}</span></div>
+            <div className="actions-row">
+              <button className="connect" type="button" disabled={role !== "admin"} onClick={() => approveEndDate(project)}>Approve</button>
+              <button className="secondary" type="button" disabled={role !== "admin"} onClick={() => rejectEndDate(project)}>Reject</button>
+              {role === "nft" && <span className="muted">Projects admin only.</span>}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="card">
         <h2>Default Watch</h2>
         <div className="desc">
-          A project can be defaulted once it is past its term plus the grace period, or past its current milestone's due date plus the grace period.
+          A project can be defaulted once it is past its approved end date plus the grace period, or past its current milestone's due date plus the grace period.
+          Without an approved end date, only the milestone rule applies.
         </div>
         {ledger.projects !== null && watch.length === 0 && <div className="empty">No projects in progress or repaying.</div>}
         {watch.map(({ project, at }) => {
           const overdue = now > at;
-          const end = storage ? termEnd(project, storage.graceDays) : null;
+          const feeStart = storage ? lateFeeStart(project, storage.graceDays) : null;
+          const fee = storage ? lateFee(project, storage.graceDays, now) : null;
           return (
             <div className="loan" key={project.id}>
               <div className="loan-head">
@@ -167,7 +220,11 @@ export default function ApproverPage() {
                 </div>
                 <div className="loan-tags">{overdue && <span className="loan-tag gold">Overdue</span>}</div>
               </div>
-              <div className="detail"><span>Term Ends (with grace)</span><span>{formatDate(end)}</span></div>
+              <div className="detail"><span>End Date</span><span>{project.endDate ? formatDateTime(project.endDate) : "Not approved"}</span></div>
+              {feeStart && <div className="detail"><span>Grace Ends</span><span>{formatDateTime(feeStart)}</span></div>}
+              {fee && fee.feeUsd > 0n && (
+                <div className="detail"><span>Late Fee Now</span><span>{fee.lateDays} day{fee.lateDays === 1 ? "" : "s"} × {bpsToPct(project.lateFeeBpsPerDay)} = {formatCents(fee.feeUsd)}</span></div>
+              )}
               <div className="detail"><span>Default Possible After</span><span>{formatDateTime(at)}</span></div>
               {project.status === "Repaying" && (
                 <div className="detail"><span>Repaid</span><span>{formatCents(project.repaidUsd)}</span></div>

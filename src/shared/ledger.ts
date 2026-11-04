@@ -23,8 +23,6 @@ export type Milestone = {
   escrowBro: bigint;
   dueAt: Date | null;
   approvedAt: Date | null;
-  netUsd: bigint;
-  lateFeeUsd: bigint;
   claimed: boolean;
 };
 
@@ -46,10 +44,16 @@ export type Project = {
   fundedUsd: bigint;
   fundedBro: bigint;
   fundedAt: Date | null;
+  /** Approved by the projects admin; the late fee and default start after it + grace. */
+  endDate: Date | null;
+  /** Proposed by the contractor (at launch: the listing's estimated completion), waiting for the admin. */
+  proposedEndDate: Date | null;
   milestones: Milestone[];
   currentMilestone: number;
   repaidUsd: bigint;
   repaidBro: bigint;
+  /** Repayment late fee in cents, as of the last repay or default. */
+  lateFeeUsd: bigint;
   settledPoolBro: bigint;
   uncoveredBro: bigint;
   status: ProjectStatus;
@@ -129,8 +133,6 @@ function parseProject(id: number, listing: any, launched: any | undefined): Proj
         escrowBro: toBigInt(ms?.escrow_bro ?? 0),
         dueAt: date(ms?.due_at),
         approvedAt: date(ms?.approved_at),
-        netUsd: toBigInt(ms?.net_usd ?? 0),
-        lateFeeUsd: toBigInt(ms?.late_fee_usd ?? 0),
         claimed: Boolean(ms?.claimed),
       };
     })
@@ -156,10 +158,13 @@ function parseProject(id: number, listing: any, launched: any | undefined): Proj
     fundedUsd: toBigInt(listing.funded_usd),
     fundedBro: toBigInt(listing.funded_bro),
     fundedAt: date(launched?.funded_at ?? listing.funded_at),
+    endDate: date(launched?.end_date),
+    proposedEndDate: date(launched?.proposed_end_date),
     milestones,
     currentMilestone: Number(launched?.current_milestone ?? 0),
     repaidUsd: toBigInt(launched?.repaid_usd ?? 0),
     repaidBro: toBigInt(launched?.repaid_bro ?? 0),
+    lateFeeUsd: toBigInt(launched?.late_fee_usd ?? 0),
     settledPoolBro: toBigInt(launched?.settled_pool_bro ?? 0),
     uncoveredBro: toBigInt(launched?.uncovered_bro ?? 0),
     status,
@@ -280,7 +285,7 @@ export function formatCents(cents: bigint) {
 // Project rules, mirrored from BROFunding / BROProjects
 // ---------------------------------------------------------------------------
 
-/** Budget plus interest, in cents. */
+/** Budget plus interest, in cents (without the late fee). */
 export function amountDue(project: Project) {
   return project.budgetUsd * BigInt(10000 + project.interestBps) / 10000n;
 }
@@ -301,25 +306,43 @@ export function unclaimedApproved(project: Project) {
   return project.milestones.filter((ms) => ms.index < project.currentMilestone && !ms.claimed);
 }
 
-/** Late days (rounded up) and fee for approving the current milestone at `now`. */
-export function lateFeePreview(project: Project, now = new Date()) {
-  const ms = project.milestones[project.currentMilestone];
-  if (!ms || !ms.dueAt) return null;
-  const lateMs = now.getTime() - ms.dueAt.getTime();
-  const lateDays = lateMs > 0 ? Math.ceil(lateMs / DAY_MS) : 0;
+/** When the repayment late fee starts (approved end date + grace), or null without an approved end date. */
+export function lateFeeStart(project: Project, graceDays: number) {
+  return project.endDate ? new Date(project.endDate.getTime() + graceDays * DAY_MS) : null;
+}
+
+/** Mirrors BROProjects `late_fee`: nothing up to end date + grace; after that, every day since the
+ * end date itself (rounded up, grace days included) costs `lateFeeBpsPerDay` of budget + interest,
+ * capped at 100%. */
+export function lateFee(project: Project, graceDays: number, now = new Date()) {
+  const start = lateFeeStart(project, graceDays);
+  if (!project.endDate || !start || now <= start) return { lateDays: 0, feeBps: 0, feeUsd: 0n };
+  const lateDays = Math.ceil((now.getTime() - project.endDate.getTime()) / DAY_MS);
   const feeBps = Math.min(10000, lateDays * project.lateFeeBpsPerDay);
-  const netUsd = ms.usd * BigInt(10000 - feeBps) / 10000n;
-  return { milestone: ms, lateDays, feeBps, netUsd, feeUsd: ms.usd - netUsd };
+  return { lateDays, feeBps, feeUsd: amountDue(project) * BigInt(feeBps) / 10000n };
 }
 
-export function termEnd(project: Project, graceDays: number) {
-  return project.fundedAt ? new Date(project.fundedAt.getTime() + (project.termMonths * 30 + graceDays) * DAY_MS) : null;
+/** The late fee BROProjects' `get_amount_due` uses: live while in progress or repaying, stored once settled. */
+export function currentLateFee(project: Project, graceDays: number, now = new Date()) {
+  return project.status === "Active" || project.status === "Repaying" ? lateFee(project, graceDays, now).feeUsd : project.lateFeeUsd;
 }
 
-/** When `mark_default` becomes possible, or null if it never applies. */
+/** Budget + interest + late fee, in cents. */
+export function totalDue(project: Project, graceDays: number, now = new Date()) {
+  return amountDue(project) + currentLateFee(project, graceDays, now);
+}
+
+/** Cents still owed, never negative. */
+export function stillOwed(project: Project, graceDays: number, now = new Date()) {
+  const due = totalDue(project, graceDays, now);
+  return due > project.repaidUsd ? due - project.repaidUsd : 0n;
+}
+
+/** When `mark_default` becomes possible, or null if it doesn't apply yet: after the approved end
+ * date + grace, or (while in progress) after the current milestone's due date + grace. */
 export function defaultableAt(project: Project, graceDays: number) {
   if (project.status !== "Active" && project.status !== "Repaying") return null;
-  const dates = [termEnd(project, graceDays)];
+  const dates = [lateFeeStart(project, graceDays)];
   const ms = project.milestones[project.currentMilestone];
   if (project.status === "Active" && ms?.dueAt) dates.push(new Date(ms.dueAt.getTime() + graceDays * DAY_MS));
   const valid = dates.filter((d): d is Date => d !== null);

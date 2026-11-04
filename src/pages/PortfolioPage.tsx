@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { ConfigError, PoolShell, useOperations, withOperator } from "../components/PoolShell";
 import {
-  FUNDING_ADDRESS, PROJECTS_ADDRESS, STATUS_LABELS, amountDue, bpsToPct, defaultableAt, entitlement, fetchInvestments, formatBro, formatCents,
-  formatDate, formatDateTime, isRefundable, parseCents, payoutFor, unclaimedApproved, usdToBro, usdToBroUp,
+  FUNDING_ADDRESS, PROJECTS_ADDRESS, STATUS_LABELS, amountDue, bpsToPct, currentLateFee, defaultableAt, entitlement, fetchInvestments, formatBro,
+  formatCents, formatDate, formatDateTime, isRefundable, lateFee, lateFeeStart, parseCents, payoutFor, stillOwed, toTimestamp, totalDue,
+  unclaimedApproved, usdToBro, usdToBroUp,
   type Investment, type Milestone, type Project,
 } from "../shared/ledger";
 import { useLedger } from "../shared/useLedger";
@@ -23,6 +24,7 @@ export default function PortfolioPage() {
   const ops = useOperations(wallet);
   const [investments, setInvestments] = useState<Investment[] | null>(null);
   const [repayAmounts, setRepayAmounts] = useState<Record<number, string>>({});
+  const [endDates, setEndDates] = useState<Record<number, string>>({});
 
   const decimals = market.decimals;
   const projects = ledger.projects ?? [];
@@ -34,11 +36,11 @@ export default function PortfolioPage() {
   const staleMessage = "The BRO price on the market assistant is out of date, so the contract would reject this. Try again after the oracle updates it.";
 
   /** Why a claim of these milestones would fail now, or null. The contractor gets BRO worth the
-   * milestones' net USD; when that exceeds their escrow, the funding wallet pays the rest. */
+   * milestones' USD amount; when that exceeds their escrow, the funding wallet pays the rest. */
   function claimBlocker(ready: Milestone[]) {
     if (!market.market || !market.price) return "The market assistant isn't loaded yet.";
     if (market.stale) return staleMessage;
-    const need = usdToBro(ready.reduce((sum, ms) => sum + ms.netUsd, 0n), market.price);
+    const need = usdToBro(ready.reduce((sum, ms) => sum + ms.usd, 0n), market.price);
     const shortfall = need - ready.reduce((sum, ms) => sum + ms.escrowBro, 0n);
     if (shortfall <= 0n) return null;
     if (ledgerUnlinked) return "The market assistant isn't linked to the projects contract, so it can't cover this claim's shortfall.";
@@ -96,7 +98,7 @@ export default function PortfolioPage() {
   function claimMilestones(project: Project) {
     if (!PROJECTS_ADDRESS) return;
     const ready = unclaimedApproved(project);
-    const netUsd = ready.reduce((sum, ms) => sum + ms.netUsd, 0n);
+    const claimUsd = ready.reduce((sum, ms) => sum + ms.usd, 0n);
     const blocker = claimBlocker(ready);
     if (blocker || !market.price) {
       ops.showToast(blocker ?? "The market assistant isn't loaded yet.");
@@ -104,8 +106,8 @@ export default function PortfolioPage() {
     }
     ops.setReview({
       title: `Claim milestone${ready.length === 1 ? "" : "s"} on #${project.id}`,
-      text: `Pays you BRO worth ${formatCents(netUsd)}`
-        + ` (${formatBro(usdToBro(netUsd, market.price), decimals)} at the market assistant's current price)`
+      text: `Pays you BRO worth ${formatCents(claimUsd)}`
+        + ` (${formatBro(usdToBro(claimUsd, market.price), decimals)} at the market assistant's current price)`
         + ` for ${ready.map((ms) => `M${ms.index + 1}`).join(", ")}. The BRO amount is fixed when the operation is included, at the price then.`,
       steps: [{ contract: PROJECTS_ADDRESS, entrypoint: "claim_milestone", params: String(project.id) }],
       onDone: () => {
@@ -122,7 +124,8 @@ export default function PortfolioPage() {
       ops.showToast(staleMessage);
       return;
     }
-    const owed = amountDue(project) - project.repaidUsd;
+    const fee = lateFee(project, storage.graceDays);
+    const owed = stillOwed(project, storage.graceDays);
     const input = repayAmounts[project.id]?.trim() ?? "";
     const cents = parseCents(input);
     if (!cents || cents <= 0n) {
@@ -135,7 +138,9 @@ export default function PortfolioPage() {
     ops.setReview({
       title: `Repay #${project.id}`,
       text: `Pays ${formatCents(usd)} of the ${formatCents(owed)} still owed`
+        + (fee.feeUsd > 0n ? ` (including a ${formatCents(fee.feeUsd)} late fee for ${fee.lateDays} day${fee.lateDays === 1 ? "" : "s"} since the end date)` : "")
         + `, ${formatBro(usdToBroUp(usd, market.price), decimals)} at the market assistant's current price. `
+        + (fee.feeUsd > 0n ? "The late fee grows each day until the project is fully repaid, so a small balance can remain if a day passes before this is included. " : "")
         + "The BRO amount is fixed at the price when the operation is included. The projects contract may move your BRO only for this one operation.",
       steps: withOperator({ address: storage.tokenAddress, tokenId: storage.tokenId }, owner, PROJECTS_ADDRESS, [
         { contract: PROJECTS_ADDRESS, entrypoint: "repay", params: { project_id: String(project.id), usd_cents: usd.toString() } },
@@ -148,7 +153,31 @@ export default function PortfolioPage() {
     });
   }
 
+  function proposeEndDate(project: Project) {
+    if (!PROJECTS_ADDRESS) return;
+    const input = endDates[project.id] ?? "";
+    // local start of the day, like the estimated completion on the Build Pool form
+    const proposed = input ? new Date(`${input}T00:00:00`) : null;
+    if (!proposed || Number.isNaN(proposed.getTime())) {
+      ops.showToast("Pick the end date to propose.");
+      return;
+    }
+    ops.setReview({
+      title: `Propose end date for #${project.id}`,
+      text: `Proposes ${formatDateTime(proposed)} as the project's end date. It only counts once the projects admin approves it`
+        + (project.endDate ? `; until then the approved end date ${formatDateTime(project.endDate)} stays in force, late fee included.` : ".")
+        + (project.proposedEndDate ? ` This replaces your pending proposal (${formatDateTime(project.proposedEndDate)}).` : ""),
+      steps: [{ contract: PROJECTS_ADDRESS, entrypoint: "propose_end_date", params: { project_id: String(project.id), end_date: toTimestamp(proposed) } }],
+      onDone: () => {
+        setEndDates((current) => ({ ...current, [project.id]: "" }));
+        ops.showToast(`End date proposed for #${project.id}.`);
+        reload();
+      },
+    });
+  }
+
   const now = new Date();
+  const graceDays = ledger.storage?.projects.graceDays ?? 0;
 
   return <PoolShell wallet={wallet} active="portfolio" title="Portfolio" subtitle="Your investments and the projects you're building.">
     <ConfigError message={ledger.error} />
@@ -204,12 +233,18 @@ export default function PortfolioPage() {
 
       <div className="card">
         <h2>My Projects</h2>
-        <div className="desc">Claim approved milestones, then repay the total in dollar installments.</div>
+        <div className="desc">
+          Claim approved milestones, then repay the total in dollar installments. Propose your end date for the projects admin to approve:
+          repay in full within the {graceDays}-day grace period after it to avoid a late fee.
+        </div>
         {ledger.projects === null && !ledger.error && <div className="empty">Loading projects...</div>}
         {ledger.projects !== null && myProjects.length === 0 && <div className="empty">You haven't submitted a project from this wallet.</div>}
         {myProjects.map((project) => {
-          const due = amountDue(project);
-          const owed = due - project.repaidUsd;
+          const due = totalDue(project, graceDays, now);
+          const fee = currentLateFee(project, graceDays, now);
+          const owed = stillOwed(project, graceDays, now);
+          const feeStart = lateFeeStart(project, graceDays);
+          const open = project.status === "Active" || project.status === "Repaying";
           const ready = unclaimedApproved(project);
           const blocker = ready.length > 0 ? claimBlocker(ready) : null;
           const defaultAt = ledger.storage ? defaultableAt(project, ledger.storage.projects.graceDays) : null;
@@ -226,6 +261,18 @@ export default function PortfolioPage() {
               <div className="detail"><span>Budget</span><span>{formatCents(project.budgetUsd)}</span></div>
               <div className="detail"><span>Funded</span><span>{formatCents(project.fundedUsd)} ({formatBro(project.fundedBro, decimals)})</span></div>
               {project.fundedAt && <div className="detail"><span>Funded On</span><span>{formatDate(project.fundedAt)}</span></div>}
+              {project.fundedAt && (
+                <div className="detail"><span>End Date</span><span>{project.endDate ? formatDateTime(project.endDate) : "Not approved yet"}</span></div>
+              )}
+              {open && project.proposedEndDate && (
+                <div className="detail"><span>Proposed End Date</span><span>{formatDateTime(project.proposedEndDate)} (waiting for the admin)</span></div>
+              )}
+              {open && feeStart && (
+                <div className="detail">
+                  <span>{now > feeStart ? "Late Fee Running Since" : "Repay in Full By"}</span>
+                  <span>{formatDateTime(feeStart)}</span>
+                </div>
+              )}
               {defaultAt && (
                 <div className="detail"><span>Default Possible After</span><span>{formatDateTime(defaultAt)}</span></div>
               )}
@@ -239,10 +286,7 @@ export default function PortfolioPage() {
                         <tr key={ms.index}>
                           <td>M{ms.index + 1}</td>
                           <td>{ms.description}</td>
-                          <td>
-                            {ms.approvedAt ? formatCents(ms.netUsd) : formatCents(ms.usd)}
-                            {ms.lateFeeUsd > 0n && <div className="muted">−{formatCents(ms.lateFeeUsd)} late fee</div>}
-                          </td>
+                          <td>{formatCents(ms.usd)}</td>
                           <td>{milestoneState(project, ms)}</td>
                         </tr>
                       ))}
@@ -254,14 +298,34 @@ export default function PortfolioPage() {
               {project.status === "Active" && ready.length > 0 && (
                 <div className="actions-row">
                   <button className="connect" type="button" disabled={projectsPaused || Boolean(blocker)} onClick={() => claimMilestones(project)}>
-                    Claim {formatCents(ready.reduce((sum, ms) => sum + ms.netUsd, 0n))}
+                    Claim {formatCents(ready.reduce((sum, ms) => sum + ms.usd, 0n))}
                   </button>
                   {blocker && !market.stale && <span className="muted">{blocker}</span>}
                 </div>
               )}
 
-              {(project.status === "Repaying" || project.status === "Repaid") && (
+              {open && (
+                <div className="fundrow">
+                  <input
+                    className="field"
+                    type="date"
+                    aria-label="End date to propose"
+                    value={endDates[project.id] ?? ""}
+                    onChange={(event) => setEndDates((current) => ({ ...current, [project.id]: event.target.value }))}
+                  />
+                  <button className="secondary" type="button" onClick={() => proposeEndDate(project)}>Propose End Date</button>
+                </div>
+              )}
+
+              {(project.status === "Repaying" || project.status === "Repaid" || (project.status === "Defaulted" && fee > 0n)) && (
                 <>
+                  <div className="detail"><span>Budget + Interest</span><span>{formatCents(amountDue(project))}</span></div>
+                  {fee > 0n && (
+                    <div className="detail">
+                      <span>Late Fee</span>
+                      <span>{formatCents(fee)} ({bpsToPct(project.lateFeeBpsPerDay)} / day since the end date{project.status === "Defaulted" ? ", not collected" : ""})</span>
+                    </div>
+                  )}
                   <div className="detail"><span>Total Repayment</span><span>{formatCents(due)}</span></div>
                   <div className="detail"><span>Repaid</span><span>{formatCents(project.repaidUsd)} ({formatBro(project.repaidBro, decimals)})</span></div>
                   <div className="detail total"><span>Still Owed</span><span>{formatCents(owed)}</span></div>

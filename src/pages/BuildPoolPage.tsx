@@ -375,7 +375,7 @@ export default function BuildPoolPage() {
                 <input className="field" type="number" min="1" max="60" step="1" {...field("term")} />
               </div>
               <div className="box">
-                <div className="top"><label htmlFor="completion">Completion</label></div>
+                <div className="top"><label htmlFor="completion">Completion</label><span>proposed end date</span></div>
                 <input className="field" type="date" {...field("completion")} />
               </div>
             </div>
@@ -390,8 +390,8 @@ export default function BuildPoolPage() {
             <div className="form-section">Milestones</div>
             <div className="desc">
               Each milestone releases its share of the budget once approved. Milestone 1 is due its duration after funding closes;
-              each later one is due its duration after the previous approval. Late approvals cost
-              {" "}{ledger.storage ? bpsToPct(ledger.storage.funding.lateFeeBpsPerDay) : "—"} of the milestone per day.
+              each later one is due its duration after the previous approval. A late approval doesn't reduce the payout, but a
+              project more than the grace period past its current milestone's due date can be defaulted.
             </div>
             {milestones.map((ms, index) => (
               <div className="milestone-row" key={index}>
@@ -430,10 +430,17 @@ export default function BuildPoolPage() {
               <div className="detail"><span>Project Cost</span><span>{request.budget ? formatCents(request.budget) : "—"}</span></div>
               <div className="detail"><span>Funded in BRO (est.)</span><span>{requestBro !== null ? formatBro(requestBro, decimals) : "—"}</span></div>
               <div className="detail"><span>Interest</span><span>{interestValid ? bpsToPct(request.interestBps) : "—"}</span></div>
-              <div className="detail"><span>Term</span><span>{request.term > 0 ? `${request.term} months after funding` : "—"}</span></div>
+              <div className="detail"><span>Term</span><span>{request.term > 0 ? `${request.term} months (sets the interest quote)` : "—"}</span></div>
+              <div className="detail"><span>Proposed End Date</span><span>{formatDate(request.completion)}</span></div>
               <div className="detail"><span>Funding Deadline</span><span>{formatDate(request.deadline)}</span></div>
               <div className="detail"><span>Milestones</span><span>{milestones.length} · {request.milestones.reduce((sum, ms) => sum + (ms.days || 0), 0)} days on time</span></div>
               <div className="detail total"><span>Total Repayment</span><span>{repayment !== null ? formatCents(repayment) : "—"}</span></div>
+            </div>
+            <div className="desc">
+              Your completion date is proposed as the project's end date once it's funded, and the projects admin approves it (you can propose
+              a new one later). Repay in full within the grace period after the approved end date. After that, a late fee of
+              {" "}{ledger.storage ? bpsToPct(ledger.storage.funding.lateFeeBpsPerDay) : "—"} of the total repayment is added for every day since
+              the end date, up to 100%.
             </div>
 
             {formError && <div className="err">{formError}</div>}
@@ -499,6 +506,7 @@ export default function BuildPoolPage() {
                         {project.owner.phone && <><dt>Phone</dt><dd>{project.owner.phone}</dd></>}
                         {project.owner.email && <><dt>Email</dt><dd>{project.owner.email}</dd></>}
                         <dt>Completion</dt><dd>{formatDate(project.estCompletion)}</dd>
+                        {project.endDate && <><dt>End Date</dt><dd>{formatDate(project.endDate)} (approved)</dd></>}
                         <dt>Contractor</dt><dd>{project.contractor}</dd>
                         {project.scope && <><dt>Scope</dt><dd>{project.scope}</dd></>}
                         {project.milestones.map((ms) => (
@@ -573,7 +581,7 @@ export default function BuildPoolPage() {
         <div className="poolrow"><span>Residential / Commercial</span><strong>{stats.residential} / {stats.commercial}</strong></div>
         <div className="poolrow"><span>Still to Fund</span><strong>{formatCents(stats.toFund)}</strong></div>
         <div className="poolrow"><span>Funding Wallet Balance</span><strong>{market.market ? formatBro(market.market.reserve, decimals, 0) : "—"}</strong></div>
-        <div className="poolrow"><span>Late Fee</span><strong>{ledger.storage ? `${bpsToPct(ledger.storage.funding.lateFeeBpsPerDay)} / day` : "—"}</strong></div>
+        <div className="poolrow"><span>Late Repayment Fee</span><strong>{ledger.storage ? `${bpsToPct(ledger.storage.funding.lateFeeBpsPerDay)} / day` : "—"}</strong></div>
       </div>
     </div>
 
