@@ -37,10 +37,13 @@ export default function PortfolioPage() {
 
   /** Why a claim of these milestones would fail now, or null. The contractor gets BRO worth the
    * milestones' USD amount; when that exceeds their escrow, the funding wallet pays the rest. */
-  function claimBlocker(ready: Milestone[]) {
-    if (!market.market || !market.price) return "The market assistant isn't loaded yet.";
-    if (market.stale) return staleMessage;
-    const need = usdToBro(ready.reduce((sum, ms) => sum + ms.usd, 0n), market.price);
+  function claimBlocker(ready: Milestone[], freshPrice?: bigint) {
+    if (!market.market) return "The market assistant isn't loaded yet.";
+    if (market.blocked) return staleMessage;
+    // A stale price will be updated before claiming, so it can't tell yet whether there's a shortfall
+    const price = freshPrice ?? (market.stale ? null : market.price);
+    if (!price) return null;
+    const need = usdToBro(ready.reduce((sum, ms) => sum + ms.usd, 0n), price);
     const shortfall = need - ready.reduce((sum, ms) => sum + ms.escrowBro, 0n);
     if (shortfall <= 0n) return null;
     if (ledgerUnlinked) return "The market assistant isn't linked to the projects contract, so it can't cover this claim's shortfall.";
@@ -95,19 +98,26 @@ export default function PortfolioPage() {
     });
   }
 
-  function claimMilestones(project: Project) {
+  async function claimMilestones(project: Project) {
     if (!PROJECTS_ADDRESS) return;
     const ready = unclaimedApproved(project);
     const claimUsd = ready.reduce((sum, ms) => sum + ms.usd, 0n);
-    const blocker = claimBlocker(ready);
-    if (blocker || !market.price) {
-      ops.showToast(blocker ?? "The market assistant isn't loaded yet.");
+    const notReady = claimBlocker(ready);
+    if (notReady) {
+      ops.showToast(notReady);
+      return;
+    }
+    const price = await market.freshPrice(ops.showToast);
+    if (!price) return;
+    const blocker = claimBlocker(ready, price);
+    if (blocker) {
+      ops.showToast(blocker);
       return;
     }
     ops.setReview({
       title: `Claim milestone${ready.length === 1 ? "" : "s"} on #${project.id}`,
       text: `Pays you BRO worth ${formatCents(claimUsd)}`
-        + ` (${formatBro(usdToBro(claimUsd, market.price), decimals)} at the market assistant's current price)`
+        + ` (${formatBro(usdToBro(claimUsd, price), decimals)} at the market assistant's current price)`
         + ` for ${ready.map((ms) => `M${ms.index + 1}`).join(", ")}. The BRO amount is fixed when the operation is included, at the price then.`,
       steps: [{ contract: PROJECTS_ADDRESS, entrypoint: "claim_milestone", params: String(project.id) }],
       onDone: () => {
@@ -119,8 +129,8 @@ export default function PortfolioPage() {
 
   async function repay(project: Project) {
     const storage = ledger.storage?.projects;
-    if (!PROJECTS_ADDRESS || !storage || !market.price) return;
-    if (market.stale) {
+    if (!PROJECTS_ADDRESS || !storage || !market.market) return;
+    if (market.blocked) {
       ops.showToast(staleMessage);
       return;
     }
@@ -135,11 +145,13 @@ export default function PortfolioPage() {
     const usd = cents > owed ? owed : cents;
     const owner = await ops.requireAddress();
     if (!owner) return;
+    const price = await market.freshPrice(ops.showToast);
+    if (!price) return;
     ops.setReview({
       title: `Repay #${project.id}`,
       text: `Pays ${formatCents(usd)} of the ${formatCents(owed)} still owed`
         + (fee.feeUsd > 0n ? ` (including a ${formatCents(fee.feeUsd)} late fee for ${fee.lateDays} day${fee.lateDays === 1 ? "" : "s"} since the end date)` : "")
-        + `, ${formatBro(usdToBroUp(usd, market.price), decimals)} at the market assistant's current price. `
+        + `, ${formatBro(usdToBroUp(usd, price), decimals)} at the market assistant's current price. `
         + (fee.feeUsd > 0n ? "The late fee grows each day until the project is fully repaid, so a small balance can remain if a day passes before this is included. " : "")
         + "The BRO amount is fixed at the price when the operation is included. The projects contract may move your BRO only for this one operation.",
       steps: withOperator({ address: storage.tokenAddress, tokenId: storage.tokenId }, owner, PROJECTS_ADDRESS, [
@@ -184,7 +196,7 @@ export default function PortfolioPage() {
     {fundingPaused && <ConfigError message="Funding is paused by its admin. Refunds are disabled for now." />}
     {projectsPaused && <ConfigError message="Projects are paused by their admin. Milestone claims, repayments and payouts are disabled for now." />}
     <ConfigError message={market.error} />
-    {market.stale && <ConfigError message="The BRO price on the market assistant is out of date, so milestone claims and repayments are disabled until the oracle updates it." />}
+    {market.blocked && <ConfigError message="The BRO price on the market assistant is out of date, so milestone claims and repayments are disabled until the oracle updates it." />}
     {ledgerUnlinked && <ConfigError message="The market assistant isn't linked to the projects contract, so claims and settlements that need the funding wallet will fail. The market admin can link it on the BRO Builder Web3 Portal's projects setup page." />}
     {!wallet.address && !ledger.error && (
       <div className="card"><div className="empty">Connect your wallet to see your investments and projects.</div></div>
@@ -297,10 +309,10 @@ export default function PortfolioPage() {
 
               {project.status === "Active" && ready.length > 0 && (
                 <div className="actions-row">
-                  <button className="connect" type="button" disabled={projectsPaused || Boolean(blocker)} onClick={() => claimMilestones(project)}>
+                  <button className="connect" type="button" disabled={projectsPaused || Boolean(blocker)} onClick={() => void claimMilestones(project)}>
                     Claim {formatCents(ready.reduce((sum, ms) => sum + ms.usd, 0n))}
                   </button>
-                  {blocker && !market.stale && <span className="muted">{blocker}</span>}
+                  {blocker && !market.blocked && <span className="muted">{blocker}</span>}
                 </div>
               )}
 
@@ -345,7 +357,7 @@ export default function PortfolioPage() {
                       onChange={(event) => setRepayAmounts((current) => ({ ...current, [project.id]: event.target.value }))}
                     />
                     <div className="token">USD</div>
-                    <button className="connect" type="button" disabled={projectsPaused || market.stale || !market.price} onClick={() => void repay(project)}>Repay</button>
+                    <button className="connect" type="button" disabled={projectsPaused || market.blocked || !market.market} onClick={() => void repay(project)}>Repay</button>
                   </div>
                   <div className="est">
                     {cents && cents > 0n && market.price

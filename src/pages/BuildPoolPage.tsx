@@ -3,7 +3,7 @@ import { useState } from "react";
 import { ConfigError, PoolShell, useOperations, withOperator } from "../components/PoolShell";
 import {
   FUNDING_ADDRESS, PROJECTS_ADDRESS, STATUS_LABELS, amountDue, bpsToPct, entitlement, formatBro, formatCents, formatDate, formatDateTime,
-  parseCents, toTimestamp, usdToBro, usdToBroUp, type Project, type ProjectType,
+  fromPriceUnit, parseCents, toTimestamp, usdToBro, usdToBroUp, type Project, type ProjectType,
 } from "../shared/ledger";
 import { parseUnits } from "../shared/units";
 import { useLedger } from "../shared/useLedger";
@@ -204,7 +204,7 @@ export default function BuildPoolPage() {
 
   async function invest(project: Project) {
     const storage = ledger.storage?.funding;
-    if (!FUNDING_ADDRESS || !storage || decimals === undefined || !market.broUsd) {
+    if (!FUNDING_ADDRESS || !storage || decimals === undefined || !market.market) {
       ops.showToast("Funding, market or BRO token details aren't loaded yet. Try again shortly.");
       return;
     }
@@ -212,7 +212,7 @@ export default function BuildPoolPage() {
       ops.showToast("Funding isn't linked to the projects contract yet, so investing is disabled.");
       return;
     }
-    if (market.stale) {
+    if (market.blocked) {
       ops.showToast("The BRO price on the market assistant is out of date, so the contract would reject this deposit. Try again after the oracle updates it.");
       return;
     }
@@ -223,11 +223,13 @@ export default function BuildPoolPage() {
     }
     const owner = await ops.requireAddress();
     if (!owner) return;
+    const price = await market.freshPrice(ops.showToast);
+    if (!price) return;
 
     ops.setReview({
       title: `Invest in #${project.id}`,
       text: `Lets the funding contract move up to ${formatBro(amount, decimals)} from your wallet, invests, then removes that permission. `
-        + `It values your BRO at the market assistant's on-chain price (1 BRO = ${usdNumber(market.broUsd, 5)}) and takes only what is still needed to reach the budget. `
+        + `It values your BRO at the market assistant's on-chain price (1 BRO = ${usdNumber(fromPriceUnit(price, decimals) ?? 0, 5)}) and takes only what is still needed to reach the budget. `
         + `You are owed your BRO plus ${bpsToPct(project.interestBps)} at settlement. `
         + "The deposit that completes the budget also moves the project's BRO to the projects contract.",
       steps: withOperator({ address: storage.tokenAddress, tokenId: storage.tokenId }, owner, FUNDING_ADDRESS, [
@@ -266,7 +268,7 @@ export default function BuildPoolPage() {
     <ConfigError message={market.error} />
     {ledger.storage?.funding.paused && <ConfigError message="Funding is paused by its admin. Submitting and investing are disabled for now." />}
     {ledger.storage && !linked && <ConfigError message="Funding isn't linked to the projects contract yet, so investing is disabled. The funding admin can link it on the BRO Builder Web3 Portal's projects setup page." />}
-    {market.stale && <ConfigError message="The BRO price on the market assistant is out of date, so investing is disabled until the oracle updates it." />}
+    {market.blocked && <ConfigError message="The BRO price on the market assistant is out of date, so investing is disabled until the oracle updates it." />}
     <div className="stats">
       <div className="stat">
         <div className="label">Total Budgets</div>
@@ -532,7 +534,7 @@ export default function BuildPoolPage() {
                             onChange={(event) => setFundAmounts((current) => ({ ...current, [project.id]: event.target.value }))}
                           />
                           <div className="token">BRO</div>
-                          <button className="connect" type="button" disabled={ledger.storage?.funding.paused || !linked || market.stale} onClick={() => void invest(project)}>Invest</button>
+                          <button className="connect" type="button" disabled={ledger.storage?.funding.paused || !linked || market.blocked} onClick={() => void invest(project)}>Invest</button>
                         </div>
                         <div className="est">
                           {taken && taken > 0n
