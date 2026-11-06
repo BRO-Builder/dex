@@ -1,8 +1,9 @@
 # CLAUDE.md
 
 BRO Builder DEX: a Tezos DApp (React 19 + TypeScript + Vite) with a DEX, baker voting
-and the BRO Build Pool, plus a PHP price oracle under `server/oracle/`. Smart contracts
-live in a separate repo: https://github.com/BRO-Builder/web3.
+and the BRO Build Pool, plus an on-demand Node price oracle under `oracle-worker/` and an
+older PHP one under `server/oracle/`. Smart contracts live in a separate repo:
+https://github.com/BRO-Builder/web3.
 
 ## Rules
 
@@ -11,7 +12,8 @@ live in a separate repo: https://github.com/BRO-Builder/web3.
   any errors before reporting the work done.
 - **Default to testnet.** For anything that sends a Tezos transaction (wallet operations,
   oracle runs, contract calls), use Shadownet. Ask before doing anything on Mainnet.
-  For the oracle, use `?dry_run=1` first.
+  For the oracle, dry-run first: `DRY_RUN=1` for `oracle-worker/`, `?dry_run=1` for
+  `server/oracle/`.
 
 ## Commands
 
@@ -57,20 +59,30 @@ amounts are `bigint`.
 print or commit its values.
 
 Read by the frontend: `VITE_NETWORK` (`mainnet` | `shadownet`), `VITE_DEX_ADDRESS`,
-`VITE_DELEGATION_ADDRESS`, `VITE_FUNDING_ADDRESS`, `VITE_PROJECTS_ADDRESS`.
+`VITE_DELEGATION_ADDRESS`, `VITE_FUNDING_ADDRESS`, `VITE_PROJECTS_ADDRESS`,
+`VITE_ORACLE_URL` (the `oracle-worker/` server; unset keeps stale-price actions disabled).
 `VITE_TOKEN_ADDRESS` and `VITE_MARKET_ADDRESS` appear in `.env` but no code reads them.
 
 Supported networks are Mainnet and Shadownet. `NETWORKS` still lists Ghostnet, but the
 oracle doesn't support it and it isn't advertised.
 
-## Oracle (`server/oracle/`)
+## On-demand oracle (`oracle-worker/`)
+
+Express + Taquito server with its own `package.json`; verify it with
+`npm --prefix oracle-worker run build`. The Build Pool pages call `POST /update-price`
+before invest, claim and repay (`useMarket().freshPrice`). It sends `update_price` only
+when the on-chain price is unset or at least `PRICE_MIN_AGE_SECONDS` old, which is also
+what caps spending on this public endpoint. See `oracle-worker/README.md`, and keep it up
+to date. Run only one oracle live at a time: it shares a wallet with the PHP one.
+
+## PHP oracle (`server/oracle/`)
 
 PHP 8.1+ service that pushes the BRO/USD price to `BROMarketAssistant.update_price`.
 Only `public/update-price.php` belongs in the web root. It forges and signs operations
 locally (`src/Forge.php`, sodium). Its env variables, deployment and first-run steps are
 in `server/oracle/README.md`; keep that file up to date when changing the oracle.
 
-The oracle and the Build Pool pages compute BRO/USD the same way (BRODex token→XTZ quote
+Both oracles and the Build Pool pages compute BRO/USD the same way (BRODex token→XTZ quote
 × Coinbase XTZ/USD). Keep the two in sync.
 
 ## Deployment
