@@ -313,6 +313,40 @@ textarea.field {
   border-radius: 11px
 }
 
+.pool-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  color: var(--muted);
+  font-size: 13px
+}
+
+.pool-bar strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums
+}
+
+.pool-bar-sep {
+  margin: 0 8px
+}
+
+.pool-bar .secondary {
+  padding: 8px 14px;
+  font-size: 13px
+}
+
+.pool-modal {
+  width: min(520px, 100%);
+  max-height: 90vh;
+  overflow: auto
+}
+
+.pool-modal .modal-header {
+  margin-bottom: 6px
+}
+
 .review-modal {
   width: min(560px, 100%);
   max-height: 90vh;
