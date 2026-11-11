@@ -7,6 +7,7 @@ import {
 } from "../shared/ledger";
 import { parseUnits } from "../shared/units";
 import { useLedger } from "../shared/useLedger";
+import { useLivePrice } from "../shared/useLivePrice";
 import { useMarket } from "../shared/useMarket";
 import { useWallet } from "../shared/tezos";
 
@@ -127,6 +128,7 @@ export default function BuildPoolPage() {
   const wallet = useWallet();
   const ledger = useLedger(wallet);
   const market = useMarket(wallet, ledger.storage?.funding.market);
+  const live = useLivePrice(wallet);
   const ops = useOperations(wallet);
   const [tab, setTab] = useState<"request" | "fund">("request");
   const [projectType, setProjectType] = useState<ProjectType>("residential");
@@ -254,7 +256,8 @@ export default function BuildPoolPage() {
   }
 
   const request = readForm(form, milestones);
-  const requestBro = request.budget && market.price ? usdToBro(request.budget, market.price) : null;
+  // estimate at the live price: the on-chain one can be hours old, and investors fund at the price of the day
+  const requestBro = request.budget && live.price ? usdToBro(request.budget, live.price) : null;
   const msUsd = request.budget ? milestoneUsd(request.budget, request.milestones.map((ms) => ms.pctBps)) : null;
   const pctTotal = request.milestones.reduce((sum, ms) => sum + (ms.pctBps || 0), 0);
   const interestValid = request.interestBps >= 50 && request.interestBps <= 5000;
@@ -381,7 +384,7 @@ export default function BuildPoolPage() {
             </div>
             <div className="conv">
               <span>{requestBro !== null ? `≈ ${formatBro(requestBro, decimals)} today` : "≈ — BRO"}</span>
-              <span>{market.broUsd ? `1 BRO = ${usdNumber(market.broUsd, 5)}${market.stale ? " (out of date)" : ""}` : "BRO price unavailable"}</span>
+              <span>{live.broUsd ? `1 BRO = ${usdNumber(live.broUsd, 5)} (live)` : live.error ? "Live BRO price unavailable" : "Loading BRO price…"}</span>
             </div>
           </div>
           <div className="trio">
@@ -493,7 +496,7 @@ export default function BuildPoolPage() {
               const pct = pctOf(project.fundedUsd, project.budgetUsd);
               const open = isOpen(project);
               const remainingUsd = project.budgetUsd - project.fundedUsd;
-              const neededBro = market.price ? usdToBroUp(remainingUsd, market.price) : null;
+              const neededBro = live.price ? usdToBroUp(remainingUsd, live.price) : null;
               const amount = decimals === undefined ? null : parseUnits(fundAmounts[project.id]?.trim() ?? "", decimals);
               const taken = amount && neededBro !== null && amount > neededBro ? neededBro : amount;
               const daysLeft = Math.ceil((project.fundingDeadline.getTime() - now.getTime()) / DAY_MS);
@@ -557,7 +560,7 @@ export default function BuildPoolPage() {
                         {taken && taken > 0n
                           ? `${taken !== amount ? `Only about ${formatBro(taken, decimals)} is still needed. ` : ""}`
                             + `You'd be owed about ${formatBro(entitlement(project, taken), decimals)} at settlement`
-                            + `${market.broUsd && decimals !== undefined ? ` · ≈ ${usdNumber(Number(taken) / 10 ** decimals * market.broUsd)} today` : ""}`
+                            + `${live.broUsd && decimals !== undefined ? ` · ≈ ${usdNumber(Number(taken) / 10 ** decimals * live.broUsd)} today` : ""}`
                           : ""}
                       </div>
                     </>
@@ -568,7 +571,7 @@ export default function BuildPoolPage() {
           </div>
           <div className="notice">
             Investing lets the funding contract move your BRO for this one operation, then removes that permission.
-            Amounts use the market assistant's on-chain BRO price, the same price the contracts use. It can change before your operation is included.
+            Estimates use the live BRO price (BRO Dex quote × XTZ/USD). The contract uses the market assistant's on-chain price, which is updated before you invest, so the amount taken can differ slightly.
           </div>
         </section>
       ) }

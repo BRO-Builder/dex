@@ -7,6 +7,7 @@ import {
   type Investment, type Milestone, type Project,
 } from "../shared/ledger";
 import { useLedger } from "../shared/useLedger";
+import { useLivePrice } from "../shared/useLivePrice";
 import { useMarket } from "../shared/useMarket";
 import { useWallet } from "../shared/tezos";
 
@@ -21,6 +22,7 @@ export default function PortfolioPage() {
   const wallet = useWallet();
   const ledger = useLedger(wallet);
   const market = useMarket(wallet, ledger.storage?.projects.market);
+  const live = useLivePrice(wallet);
   const ops = useOperations(wallet);
   const [investments, setInvestments] = useState<Investment[] | null>(null);
   const [repayAmounts, setRepayAmounts] = useState<Record<number, string>>({});
@@ -360,8 +362,8 @@ export default function PortfolioPage() {
                     <button className="connect" type="button" disabled={projectsPaused || market.blocked || !market.market} onClick={() => void repay(project)}>Repay</button>
                   </div>
                   <div className="est">
-                    {cents && cents > 0n && market.price
-                      ? `≈ ${formatBro(usdToBroUp(cents > owed ? owed : cents, market.price), decimals)} at the market assistant's current price`
+                    {cents && cents > 0n && live.price
+                      ? `≈ ${formatBro(usdToBroUp(cents > owed ? owed : cents, live.price), decimals)} at the live BRO price`
                       : ""}
                   </div>
                 </>
