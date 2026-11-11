@@ -13,4 +13,14 @@ export default defineConfig({
   ],
   appType: "spa",
   publicDir: false,
+  build: {
+    rollupOptions: {
+      input: {
+        main: "index.html",
+        buildPool: "build-pool.html",
+        portfolio: "portfolio.html",
+        approver: "approver.html",
+      },
+    },
+  },
 });

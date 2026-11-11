@@ -1,24 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import { AnimatedLogo } from "../components/AnimatedLogo";
+import { BakerAvatar } from "../components/BakerAvatar";
 import { LoadingButton, WalletBar } from "../components/Controls";
-import { fetchTokenBalance, fetchTokenMetadata, type TokenMetadata } from "../shared/tokenMetadata";
+import { getBakers } from "../shared/bakers";
+import { fetchDexPool, fetchXtzUsd, poolRatio, spotBroUsd, type DexPool } from "../shared/dex";
+import { fetchTokenBalance } from "../shared/tokenMetadata";
 import { formatUnits, parseUnits, toBigInt } from "../shared/units";
 import { isValidAddress, useWallet } from "../shared/tezos";
-
-type Pool = {
-  contractAddress: string;
-  tokenAddress: string;
-  tokenId: string;
-  token: TokenMetadata;
-  xtzPool: bigint;
-  tokenPool: bigint;
-  totalShares: bigint;
-};
+import { ValidationResult, validateKeyHash } from "@taquito/utils";
 
 type Direction = "xtz-bro" | "bro-xtz";
 
 const DEX_ADDRESS = import.meta.env.VITE_DEX_ADDRESS as string | undefined;
-const COINBASE_URL = "https://api.coinbase.com/v2/prices/XTZ-USD/spot";
+const DELEGATION_ADDRESS = import.meta.env.VITE_DELEGATION_ADDRESS as string | undefined;
+const XTZ_LOGO_URL = "https://services.tzkt.io/v1/avatars-dark/tz3UQN6nBQHofmgQ3pZannhiYE2CT7TEZFim";
 
 function money(value: number | null, digits = 2) {
   return value === null || !Number.isFinite(value)
@@ -30,72 +25,92 @@ function number(value: number | null, digits = 4) {
   return value === null || !Number.isFinite(value) ? "—" : value.toLocaleString(undefined, { maximumFractionDigits: digits });
 }
 
-function calculateOutput(pool: Pool, amount: bigint, direction: Direction) {
+function calculateOutput(pool: DexPool, amount: bigint, direction: Direction) {
   const input = direction === "xtz-bro" ? pool.xtzPool : pool.tokenPool;
   const output = direction === "xtz-bro" ? pool.tokenPool : pool.xtzPool;
   if (amount <= 0n || input <= 0n || output <= 0n) return 0n;
   return output - (input * output) / (input + amount);
 }
 
+async function fetchUserShares(toolkit: any, contractAddress: string, owner: string) {
+  const contract: any = await toolkit.wallet.at(contractAddress);
+  const storage: any = await contract.storage();
+  const value = await storage.shares.get(owner);
+  return value ? toBigInt(value) : 0n;
+}
+
 export default function DexPage() {
   const wallet = useWallet();
-  const [pool, setPool] = useState<Pool | null>(null);
+  const [pool, setPool] = useState<DexPool | null>(null);
   const [balances, setBalances] = useState<{ xtz: bigint | null; token: bigint | null }>({ xtz: null, token: null });
   const [xtzUsd, setXtzUsd] = useState<number | null>(null);
   const [direction, setDirection] = useState<Direction>("xtz-bro");
   const [tab, setTab] = useState<"swap" | "liquidity">("swap");
+  const [liquidityTab, setLiquidityTab] = useState<"add" | "remove">("add");
   const [pay, setPay] = useState("");
   const [activePreset, setActivePreset] = useState<number | null>(null);
   const [xtzIn, setXtzIn] = useState("");
+  const [activeLiquidityPreset, setActiveLiquidityPreset] = useState<number | null>(null);
+  // Pool shares have no decimals. null = unknown / wallet not connected.
+  const [userShares, setUserShares] = useState<bigint | null>(null);
+  const [sharesIn, setSharesIn] = useState("");
+  const [activeRemovePreset, setActiveRemovePreset] = useState<number | null>(null);
+  const [selectedBaker, setSelectedBaker] = useState("");
+  const [customBaker, setCustomBaker] = useState("");
+  const [bakerModalOpen, setBakerModalOpen] = useState(false);
   const [slippage, setSlippage] = useState("1");
   const [messages, setMessages] = useState(["Loading pool data..."]);
   const [loading, setLoading] = useState(true);
   const [swapping, setSwapping] = useState(false);
   const [addingLiquidity, setAddingLiquidity] = useState(false);
-  const [authorizing, setAuthorizing] = useState(true);
+  const [removingLiquidity, setRemovingLiquidity] = useState(false);
+  const [transaction, setTransaction] = useState<{ hash: string; url: string } | null>(null);
+  const [voteConfirm, setVoteConfirm] = useState<{ baker: string; resolve: (ok: boolean) => void } | null>(null);
 
   function log(message: string) {
     setMessages((current) => [...current.slice(-4), message]);
   }
 
+  function confirmBakerVote(baker: string) {
+    return new Promise<boolean>((resolve) => setVoteConfirm({ baker, resolve }));
+  }
+
+  function closeVoteConfirm(ok: boolean) {
+    voteConfirm?.resolve(ok);
+    setVoteConfirm(null);
+  }
+
+  async function buildOperatorCalls(toolkit: any, tokenAddress: string, tokenId: any, owner: string, operator: string) {
+    const token: any = await toolkit.wallet.at(tokenAddress);
+    const update = (kind: "add_operator" | "remove_operator") =>
+      token.methodsObject.update_operators([{ [kind]: { owner, operator, token_id: tokenId } }]);
+    return { authorize: update("add_operator"), revoke: update("remove_operator") };
+  }
+
   async function loadData() {
-    if (!DEX_ADDRESS || !isValidAddress(DEX_ADDRESS)) {
-      throw new Error("Set VITE_DEX_ADDRESS to a valid KT1 address.");
-    }
-    const [storageResponse, priceResponse] = await Promise.all([
-      fetch(`${wallet.selected.api}/v1/contracts/${DEX_ADDRESS}/storage`),
-      fetch(COINBASE_URL),
+    const [nextPool, price] = await Promise.all([
+      fetchDexPool(wallet.selected.api, DEX_ADDRESS),
+      fetchXtzUsd(),
     ]);
-    if (!storageResponse.ok) throw new Error(`DEX storage request failed (HTTP ${storageResponse.status}).`);
-    if (!priceResponse.ok) throw new Error(`Coinbase price request failed (HTTP ${priceResponse.status}).`);
-    const storage = await storageResponse.json();
-    const price = await priceResponse.json();
-    const tokenId = String(storage.token_id);
-    const token = await fetchTokenMetadata(wallet.selected.api, storage.token_address, tokenId);
-    setPool({
-      contractAddress: DEX_ADDRESS,
-      tokenAddress: storage.token_address,
-      tokenId,
-      token,
-      xtzPool: toBigInt(storage.xtz_pool),
-      tokenPool: toBigInt(storage.token_pool),
-      totalShares: toBigInt(storage.total_shares),
-    });
-    setXtzUsd(Number(price.data?.amount));
+    setPool(nextPool);
+    setXtzUsd(price);
     setMessages(["Pool data updated."]);
   }
 
   async function loadBalances() {
     if (!wallet.address || !pool) {
       setBalances({ xtz: null, token: null });
+      setUserShares(null);
       return;
     }
     const { toolkit } = await wallet.ensureWallet();
-    const [xtz, token] = await Promise.all([
+    const [xtz, token, shares] = await Promise.all([
       toolkit.tz.getBalance(wallet.address).then(toBigInt),
       fetchTokenBalance(wallet.selected.api, wallet.address, pool.tokenAddress, pool.tokenId),
+      fetchUserShares(toolkit, pool.contractAddress, wallet.address)
     ]);
     setBalances({ xtz, token });
+    setUserShares(shares);
   }
 
   useEffect(() => {
@@ -108,6 +123,7 @@ export default function DexPage() {
   useEffect(() => {
     void loadBalances().catch((error) => {
       setBalances({ xtz: null, token: null });
+      setUserShares(null);
       log(`Unable to load wallet balances: ${error instanceof Error ? error.message : String(error)}`);
     });
   }, [wallet.address, pool?.tokenAddress, pool?.tokenId, wallet.selected.api]);
@@ -119,15 +135,22 @@ export default function DexPage() {
     return () => window.clearInterval(interval);
   }, [wallet.selected.api]);
 
+  useEffect(() => {
+    if (!voteConfirm) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") closeVoteConfirm(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [voteConfirm]);
+
   const slippagePercent = Math.max(0, Math.min(50, Number(slippage) || 0));
   const directionDecimals = direction === "xtz-bro" ? 6 : pool?.token.decimals ?? 0;
   const outputDecimals = direction === "xtz-bro" ? pool?.token.decimals ?? 0 : 6;
   const amountIn = pool ? parseUnits(pay, directionDecimals) : null;
   const output = pool && amountIn ? calculateOutput(pool, amountIn, direction) : 0n;
   const minimum = output * BigInt(Math.round((100 - slippagePercent) * 100)) / 10000n;
-  const ratio = pool && pool.xtzPool > 0n ? Number(pool.tokenPool) / 10 ** pool.token.decimals / (Number(pool.xtzPool) / 1e6) : null;
+  const ratio = poolRatio(pool);
   const liquidityUsd = pool && xtzUsd !== null ? Number(pool.xtzPool) / 1e6 * xtzUsd * 2 : null;
-  const broUsd = ratio && xtzUsd !== null ? xtzUsd / ratio : null;
+  const broUsd = spotBroUsd(pool, xtzUsd);
   const priceImpact = pool && amountIn && output > 0n
     ? Math.max(0, 1 - Number(output) / Number((direction === "xtz-bro" ? pool.tokenPool : pool.xtzPool))) * 100
     : null;
@@ -135,6 +158,19 @@ export default function DexPage() {
   const matchingToken = pool && liquidityToken && pool.xtzPool > 0n ? pool.tokenPool * liquidityToken / pool.xtzPool : 0n;
   const sharePercent = pool && liquidityToken && pool.xtzPool + liquidityToken > 0n
     ? Number(liquidityToken) / Number(pool.xtzPool + liquidityToken) * 100 : null;
+
+  const sharesToRemove = parseUnits(sharesIn, 0);
+  const removeFraction = pool && sharesToRemove && sharesToRemove > 0n && pool.totalShares > 0n
+    ? Number(sharesToRemove) / Number(pool.totalShares) : null;
+  const removeXtz = pool && sharesToRemove && sharesToRemove > 0n && pool.totalShares > 0n
+    ? pool.xtzPool * sharesToRemove / pool.totalShares : 0n;
+  const removeToken = pool && sharesToRemove && sharesToRemove > 0n && pool.totalShares > 0n
+    ? pool.tokenPool * sharesToRemove / pool.totalShares : 0n;
+  const removeMinXtz = removeXtz * BigInt(Math.round((100 - slippagePercent) * 100)) / 10000n;
+  const removeMinToken = removeToken * BigInt(Math.round((100 - slippagePercent) * 100)) / 10000n;
+  const canRemove = !!sharesToRemove && sharesToRemove > 0n && userShares !== null && sharesToRemove <= userShares && !!pool && pool.totalShares > 0n;
+  const positionUsd = pool && userShares !== null && pool.totalShares > 0n && liquidityUsd !== null
+    ? Number(userShares) / Number(pool.totalShares) * liquidityUsd : null;
 
   async function swap() {
     if (!pool || !wallet.address || !amountIn || amountIn <= 0n) return;
@@ -150,23 +186,22 @@ export default function DexPage() {
           token_amount: amountIn.toString(),
           min_xtz_out: minimum.toString(),
         });
-        if (authorizing) {
-          const token: any = await toolkit.wallet.at(pool.tokenAddress);
-          const authorize = token.methodsObject.update_operators([{
-            add_operator: {
-              owner: wallet.address,
-              operator: pool.contractAddress,
-              token_id: pool.tokenId
-            },
-          }]);
-          operation = await toolkit.wallet.batch().withContractCall(authorize).withContractCall(call).send();
-        } else {
-          operation = await call.send();
-        }
+        const { authorize, revoke } = await buildOperatorCalls(
+          toolkit, pool.tokenAddress, pool.tokenId, wallet.address, pool.contractAddress,
+        );
+        operation = await toolkit.wallet.batch()
+          .withContractCall(authorize)
+          .withContractCall(call)
+          .withContractCall(revoke)
+          .send();
       }
       log(`Swap submitted: ${operation.opHash}`);
       await operation.confirmation();
-      log(`Swap complete: ${wallet.selected.explorer}/${operation.opHash}`);
+      setTransaction({
+        hash: operation.opHash,
+        url: `${wallet.selected.explorer}/${operation.opHash}`,
+      });
+      log("Swap complete.");
       setPay("");
       await loadData();
       await loadBalances();
@@ -184,33 +219,86 @@ export default function DexPage() {
       const { toolkit } = await wallet.ensureWallet();
       const dex: any = await toolkit.wallet.at(pool.contractAddress);
       const call = dex.methodsObject.add_liquidity("0");
-      let operation: any;
-      if (authorizing) {
-        const token: any = await toolkit.wallet.at(pool.tokenAddress);
-        const authorize = token.methodsObject.update_operators([{
-          add_operator: {
-            owner: wallet.address,
-            operator: pool.contractAddress,
-            token_id: pool.tokenId
-          },
-        }]);
-        operation = await toolkit.wallet.batch()
-          .withContractCall(authorize)
-          .withTransfer(call.toTransferParams({ amount: Number(liquidityToken), mutez: true }))
-          .send();
-      } else {
-        operation = await call.send({ amount: Number(liquidityToken), mutez: true });
-      }
+      const { authorize, revoke } = await buildOperatorCalls(
+        toolkit, pool.tokenAddress, pool.tokenId, wallet.address, pool.contractAddress,
+      );
+      const operation: any = await toolkit.wallet.batch()
+        .withContractCall(authorize)
+        .withTransfer(call.toTransferParams({ amount: Number(liquidityToken), mutez: true }))
+        .withContractCall(revoke)
+        .send();
       log(`Liquidity submitted: ${operation.opHash}`);
       await operation.confirmation();
+      setTransaction({
+        hash: operation.opHash,
+        url: `${wallet.selected.explorer}/${operation.opHash}`,
+      });
       log("Liquidity added.");
       setXtzIn("");
       await loadData();
       await loadBalances();
+      await voteForBaker();
     } catch (error) {
       log(`Liquidity failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setAddingLiquidity(false);
+    }
+  }
+
+  async function removeLiquidity() {
+    if (!pool || !wallet.address || !sharesToRemove || !canRemove) return;
+    setRemovingLiquidity(true);
+    try {
+      const { toolkit } = await wallet.ensureWallet();
+      const dex: any = await toolkit.wallet.at(pool.contractAddress);
+      const operation: any = await dex.methodsObject.remove_liquidity({
+        shares: sharesToRemove.toString(),
+        min_xtz: removeMinXtz.toString(),
+        min_token: removeMinToken.toString(),
+      }).send();
+      log(`Remove liquidity submitted: ${operation.opHash}`);
+      await operation.confirmation();
+      setTransaction({
+        hash: operation.opHash,
+        url: `${wallet.selected.explorer}/${operation.opHash}`,
+      });
+      log("Liquidity removed.");
+      setSharesIn("");
+      setActiveRemovePreset(null);
+      await loadData();
+      await loadBalances();
+    } catch (error) {
+      log(`Remove liquidity failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setRemovingLiquidity(false);
+    }
+  }
+
+  async function voteForBaker() {
+    const baker = customBaker.trim() || selectedBaker;
+    if (!baker) return;
+    if (!DELEGATION_ADDRESS || !isValidAddress(DELEGATION_ADDRESS)) {
+      log("Baker vote skipped: set VITE_DELEGATION_ADDRESS to a valid KT1 address.");
+      return;
+    }
+    if (validateKeyHash(baker) !== ValidationResult.VALID) {
+      log("Baker vote skipped: enter a valid Tezos key hash.");
+      return;
+    }
+    if (!(await confirmBakerVote(baker))) {
+      log("Baker vote skipped.");
+      return;
+    }
+
+    try {
+      const { toolkit } = await wallet.ensureWallet();
+      const delegation: any = await toolkit.wallet.at(DELEGATION_ADDRESS);
+      const operation = await delegation.methodsObject.vote(baker).send();
+      log(`Baker vote submitted: ${operation.opHash}`);
+      await operation.confirmation();
+      log("Baker vote complete.");
+    } catch (error) {
+      log(`Baker vote failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -219,14 +307,42 @@ export default function DexPage() {
   const payBalance = direction === "xtz-bro" ? balances.xtz : balances.token;
   const receiveBalance = direction === "xtz-bro" ? balances.token : balances.xtz;
   const formatBalance = (value: bigint | null, decimals: number, symbol: string) =>
-    value === null ? "—" : `${formatUnits(value, decimals, 6)} ${symbol}`;
+    value === null ? "—" : `${formatUnits(value, decimals)} ${symbol}`;
+  const currencyUnit = (symbol: string, imageUrl?: string) => (
+    <div className="token">
+      <img className="token-logo" src={imageUrl} alt="" aria-hidden="true" />
+      {symbol}
+    </div>
+  );
+  const bakers = getBakers(wallet.network);
+  const trimmedCustomBaker = customBaker.trim();
+  const customBakerValid = trimmedCustomBaker !== "" && validateKeyHash(trimmedCustomBaker) === ValidationResult.VALID;
+  const selectedBakerInfo = bakers.find((baker) => baker.keyHash === selectedBaker);
+
   const setAmountPercent = (percent: number) => {
     if (payBalance === null) return;
-    const feeReserve = direction === "xtz-bro" && percent === 100 ? 100000n : 0n;
+    const feeReserve = direction === "xtz-bro" ? 100000n : 0n;
     const available = payBalance > feeReserve ? payBalance - feeReserve : 0n;
     const amount = available * BigInt(percent) / 100n;
-    setPay(amount > 0n ? formatUnits(amount, directionDecimals, 8) : "");
+    setPay(amount > 0n ? formatUnits(amount, directionDecimals) : "");
     setActivePreset(percent);
+  };
+  const setLiquidityAmountPercent = (percent: number) => {
+    if (balances.xtz === null || balances.token === null || !pool || pool.xtzPool <= 0n || pool.tokenPool <= 0n) return;
+    const feeReserve = percent === 100 ? 100000n : 0n;
+    const availableXtz = balances.xtz > feeReserve ? balances.xtz - feeReserve : 0n;
+    const availableFromToken = balances.token * pool.xtzPool / pool.tokenPool;
+    const available = availableXtz < availableFromToken ? availableXtz : availableFromToken;
+    const amount = available * BigInt(percent) / 100n;
+    setXtzIn(amount > 0n ? formatUnits(amount, 6) : "");
+    setActiveLiquidityPreset(percent);
+  };
+
+  const setRemoveAmountPercent = (percent: number) => {
+    if (userShares === null) return;
+    const amount = userShares * BigInt(percent) / 100n;
+    setSharesIn(amount > 0n ? amount.toString() : "");
+    setActiveRemovePreset(percent);
   };
 
   return <main className="wrap">
@@ -271,7 +387,7 @@ export default function DexPage() {
               </div>
               <div className="row">
                 <input className="input" value={pay} onChange={(event) => { setPay(event.target.value); setActivePreset(null); }} type="number" min="0" step="any" placeholder="0.00" />
-                <div className="token">{payToken}</div>
+                {currencyUnit(payToken, direction === "xtz-bro" ? XTZ_LOGO_URL : pool?.token.imageUrl)}
               </div>
             </div>
 
@@ -298,7 +414,7 @@ export default function DexPage() {
               </div>
               <div className="row">
                 <input className="input" readOnly value={output ? formatUnits(output, outputDecimals, 6) : ""} placeholder="0.00" />
-                <div className="token">{receiveToken}</div>
+                {currencyUnit(receiveToken, direction === "xtz-bro" ? pool?.token.imageUrl : XTZ_LOGO_URL)}
               </div>
             </div>
             <div className="details">
@@ -329,18 +445,19 @@ export default function DexPage() {
               </div>
             </div>
 
-            { direction === "bro-xtz" && (
-              <label className="check">
-                <input type="checkbox" checked={authorizing} onChange={(event) => setAuthorizing(event.target.checked)} />
-                Authorize the DEX in the same transaction
-              </label>
-            ) }
-            <LoadingButton className="primary" loading={swapping} disabled={loading || !pool || !wallet.address || !amountIn || amountIn <= 0n} onClick={() => void swap()}>{wallet.address ? "Swap" : "Connect Wallet to Swap"}</LoadingButton>
+            <LoadingButton className="primary mt-18" loading={swapping} disabled={loading || !pool || !wallet.address || !amountIn || amountIn <= 0n} onClick={() => void swap()}>{wallet.address ? "Swap" : "Connect Wallet to Swap"}</LoadingButton>
           </section>
         ) }
 
         { tab === "liquidity" && (
           <section>
+            <div className="subtabs">
+              <button type="button" className={liquidityTab === "add" ? "subtab active" : "subtab"} onClick={() => setLiquidityTab("add")}>ADD</button>
+              <button type="button" className={liquidityTab === "remove" ? "subtab active" : "subtab"} onClick={() => setLiquidityTab("remove")}>REMOVE</button>
+            </div>
+
+            { liquidityTab === "add" && (
+          <div className="liqpanel active">
             <h2>Add Liquidity</h2>
             <div className="desc">Supply {pool?.token.symbol ?? "BRO"} and XTZ to the pool at the current ratio.</div>
             <div className="liquidity">
@@ -355,9 +472,24 @@ export default function DexPage() {
               </div>
 
               <div className="row">
-                <input className="input" value={xtzIn} onChange={(event) => setXtzIn(event.target.value)} type="number" placeholder="0.00" />
-                <div className="token">XTZ</div>
+                <input className="input" value={xtzIn} onChange={(event) => { setXtzIn(event.target.value); setActiveLiquidityPreset(null); }} type="number" placeholder="0.00" />
+                {currencyUnit("XTZ", XTZ_LOGO_URL)}
               </div>
+            </div>
+
+            <div className="amount-presets">
+              {[25, 50, 75, 100].map((percent) => (
+                <button
+                  type="button"
+                  className={activeLiquidityPreset === percent ? "amount-preset active" : "amount-preset"}
+                  data-percent={percent}
+                  disabled={!wallet.address || balances.xtz === null || balances.token === null || !pool}
+                  onClick={() => setLiquidityAmountPercent(percent)}
+                  key={percent}
+                >
+                  {percent === 100 ? "MAX" : `${percent}%`}
+                </button>
+              ))}
             </div>
 
             <div className="box">
@@ -367,7 +499,7 @@ export default function DexPage() {
               </div>
               <div className="row">
                 <input className="input" readOnly value={matchingToken ? formatUnits(matchingToken, pool?.token.decimals ?? 0, 6) : ""} placeholder="0.00" />
-                <div className="token">{pool?.token.symbol ?? "BRO"}</div>
+                {currencyUnit(pool?.token.symbol ?? "BRO", pool?.token.imageUrl)}
               </div>
             </div>
 
@@ -383,11 +515,102 @@ export default function DexPage() {
               </div>
             </div>
 
-            <label className="check">
-              <input type="checkbox" checked={authorizing} onChange={(event) => setAuthorizing(event.target.checked)} />
-              Authorize the DEX in the same transaction
-            </label>
-            <LoadingButton className="primary" loading={addingLiquidity} disabled={loading || !pool || !wallet.address || !liquidityToken || liquidityToken <= 0n || matchingToken <= 0n} onClick={() => void addLiquidity()}>{wallet.address ? "Add Liquidity" : "Connect Wallet to Add Liquidity"}</LoadingButton>
+            <div className="baker-choice">
+              <div>
+                <div className="top">
+                  <span>Vote for a baker</span>
+                  <span>Optional</span>
+                </div>
+                <div className="baker-summary">
+                  {customBakerValid ? (
+                    <>
+                      <BakerAvatar keyHash={trimmedCustomBaker} label="Custom" />
+                      <span>{trimmedCustomBaker}</span>
+                    </>
+                  ) : selectedBakerInfo ? (
+                    <>
+                      <BakerAvatar keyHash={selectedBakerInfo.keyHash} label={selectedBakerInfo.label} logo={selectedBakerInfo.logo} />
+                      <span>{selectedBakerInfo.label}</span>
+                    </>
+                  ) : (
+                    customBaker || "No baker selected"
+                  )}
+                </div>
+              </div>
+              <button type="button" className="secondary" onClick={() => setBakerModalOpen(true)}>Choose baker</button>
+            </div>
+
+            <LoadingButton className="primary mt-18" loading={addingLiquidity} disabled={loading || !pool || !wallet.address || !liquidityToken || liquidityToken <= 0n || matchingToken <= 0n} onClick={() => void addLiquidity()}>{wallet.address ? "Add Liquidity" : "Connect Wallet to Add Liquidity"}</LoadingButton>
+          </div>
+            ) }
+
+            { liquidityTab === "remove" && (
+          <div className="liqpanel active">
+            <h2>Remove Liquidity</h2>
+            <div className="desc">Burn pool shares to withdraw your {pool?.token.symbol ?? "BRO"} and XTZ at the current ratio.</div>
+            <div className="liquidity">
+              <div className="liqbig">{money(positionUsd)}</div>
+              <div className="liqsub">Your position value</div>
+            </div>
+
+            <div className="box">
+              <div className="top">
+                <span>Pool Shares to Remove</span>
+                <span id="shareBalance">Balance: {userShares === null ? "—" : `${userShares.toString()} SHARES`}</span>
+              </div>
+              <div className="row">
+                <input className="input" value={sharesIn} onChange={(event) => { setSharesIn(event.target.value); setActiveRemovePreset(null); }} type="number" min="0" step="1" placeholder="0" />
+                <div className="token">SHARES</div>
+              </div>
+            </div>
+
+            <div className="amount-presets">
+              {[25, 50, 75, 100].map((percent) => (
+                <button
+                  type="button"
+                  className={activeRemovePreset === percent ? "amount-preset active" : "amount-preset"}
+                  data-percent={percent}
+                  disabled={!wallet.address || userShares === null}
+                  onClick={() => setRemoveAmountPercent(percent)}
+                  key={percent}
+                >
+                  {percent === 100 ? "MAX" : `${percent}%`}
+                </button>
+              ))}
+            </div>
+
+            <div className="details">
+              <div className="detail">
+                <span>You Receive (XTZ)</span>
+                <span>{removeXtz > 0n ? `${formatUnits(removeXtz, 6, 6)} XTZ` : "—"}</span>
+              </div>
+              <div className="detail">
+                <span>You Receive ({pool?.token.symbol ?? "BRO"})</span>
+                <span>{removeToken > 0n ? `${formatUnits(removeToken, pool?.token.decimals ?? 0, 6)} ${pool?.token.symbol ?? "BRO"}` : "—"}</span>
+              </div>
+              <div className="detail">
+                <span>Pool Share Removed</span>
+                <span>{removeFraction === null ? "—" : `${(removeFraction * 100).toFixed(4)}%`}</span>
+              </div>
+              <div className="detail">
+                <span>Minimum Received</span>
+                <span>{removeXtz > 0n ? `${formatUnits(removeMinXtz, 6, 6)} XTZ + ${formatUnits(removeMinToken, pool?.token.decimals ?? 0, 6)} ${pool?.token.symbol ?? "BRO"}` : "—"}</span>
+              </div>
+              <div className="detail">
+                <span>Slippage</span>
+                <span>{slippagePercent.toFixed(2)}%</span>
+              </div>
+              <div className="slip">
+                { [0.5, 1, 2, 5].map((value) => (
+                  <button key={value} className={slippage === String(value) ? "active" : ""} onClick={() => setSlippage(String(value))}>{value}%</button>
+                )) }
+                <input className="custom" value={slippage} onChange={(event) => setSlippage(event.target.value)} placeholder="Custom" />
+              </div>
+            </div>
+
+            <LoadingButton className="primary mt-18" loading={removingLiquidity} disabled={loading || !wallet.address || !canRemove} onClick={() => void removeLiquidity()}>{wallet.address ? "Remove Liquidity" : "Connect Wallet to Remove Liquidity"}</LoadingButton>
+          </div>
+            ) }
           </section>
         ) }
       </div>
@@ -442,6 +665,107 @@ export default function DexPage() {
       </div>
     </div>
 
-    <div className="status">{messages.join("\n")}</div>
+    {bakerModalOpen && (
+      <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+        if (event.target === event.currentTarget) setBakerModalOpen(false);
+      }}>
+        <div className="modal" role="dialog" aria-modal="true" aria-labelledby="baker-modal-title">
+          <div className="modal-header">
+            <div>
+              <h2 id="baker-modal-title">Choose a baker</h2>
+              <div className="desc">Your wallet will ask for a separate vote confirmation after liquidity is added.</div>
+            </div>
+            <button type="button" className="modal-close" aria-label="Close baker selection" onClick={() => setBakerModalOpen(false)}>×</button>
+          </div>
+          <div className="modal-label" id="baker-list-label">Configured baker</div>
+          <div className="baker-list" role="listbox" aria-labelledby="baker-list-label">
+            {bakers.map((baker) => (
+              <button
+                type="button"
+                role="option"
+                aria-selected={selectedBaker === baker.keyHash}
+                key={baker.keyHash}
+                className={selectedBaker === baker.keyHash ? "baker-option active" : "baker-option"}
+                onClick={() => {
+                  setSelectedBaker(baker.keyHash);
+                  setCustomBaker("");
+                }}
+              >
+                <BakerAvatar keyHash={baker.keyHash} label={baker.label} logo={baker.logo} />
+                <span className="baker-option-text">
+                  <span className="baker-option-label">{baker.label}</span>
+                  <span className="baker-option-hash">{baker.keyHash.slice(0, 7)}…{baker.keyHash.slice(-4)}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+          <div className="modal-or">or</div>
+          <label className="modal-label" htmlFor="custom-baker">Custom baker key hash</label>
+          <input
+            id="custom-baker"
+            className="input baker-input"
+            value={customBaker}
+            onChange={(event) => {
+              setCustomBaker(event.target.value);
+              setSelectedBaker("");
+            }}
+            placeholder="tz1, tz2, or tz3 key hash"
+            spellCheck={false}
+          />
+          {customBakerValid && (
+            <div className="baker-summary baker-preview">
+              <BakerAvatar keyHash={trimmedCustomBaker} label="Custom" />
+              <span>{trimmedCustomBaker.slice(0, 7)}…{trimmedCustomBaker.slice(-4)}</span>
+            </div>
+          )}
+          <div className="modal-actions">
+            <button type="button" className="secondary" onClick={() => {
+              setSelectedBaker("");
+              setCustomBaker("");
+              setBakerModalOpen(false);
+            }}>Clear</button>
+            <button type="button" className="primary" onClick={() => setBakerModalOpen(false)}>Use this baker</button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {voteConfirm && (() => {
+      const info = bakers.find((baker) => baker.keyHash === voteConfirm.baker);
+      return (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) closeVoteConfirm(false);
+        }}>
+          <div className="modal" role="alertdialog" aria-modal="true" aria-labelledby="vote-modal-title" aria-describedby="vote-modal-desc">
+            <div className="modal-header">
+              <div>
+                <h2 id="vote-modal-title">Confirm baker vote</h2>
+                <div className="desc" id="vote-modal-desc">
+                  Your liquidity shares will be voted for this baker. Your wallet will ask you to approve the transaction.
+                </div>
+              </div>
+              <button type="button" className="modal-close" aria-label="Cancel vote" onClick={() => closeVoteConfirm(false)}>×</button>
+            </div>
+            <div className="baker-summary baker-preview">
+              <BakerAvatar keyHash={voteConfirm.baker} label={info?.label ?? "Custom"} logo={info?.logo} />
+              <span>{info ? `${info.label} (${voteConfirm.baker.slice(0, 7)}…${voteConfirm.baker.slice(-4)})` : voteConfirm.baker}</span>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="secondary" onClick={() => closeVoteConfirm(false)}>Skip vote</button>
+              <button type="button" className="primary" autoFocus onClick={() => closeVoteConfirm(true)}>Confirm vote</button>
+            </div>
+          </div>
+        </div>
+      );
+    })()}
+
+    <div className="status">
+      {messages.join("\n")}
+      {transaction && (
+        <div>
+          View transaction: <a href={transaction.url} target="_blank" rel="noreferrer">{transaction.hash}</a>
+        </div>
+      )}
+    </div>
   </main>;
 }

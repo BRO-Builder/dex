@@ -62,7 +62,9 @@ export function useWallet() {
   async function connect() {
     const { wallet: nextWallet } = await ensureWallet();
     await nextWallet.requestPermissions();
-    setAddress(await nextWallet.getPKH());
+    const nextAddress = await nextWallet.getPKH();
+    setAddress(nextAddress);
+    return nextAddress;
   }
 
   async function disconnect() {
