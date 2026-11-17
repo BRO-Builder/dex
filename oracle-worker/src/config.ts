@@ -47,8 +47,6 @@ export function loadConfig() {
     coinbaseUrl: env("COINBASE_URL") ?? "https://api.coinbase.com/v2/prices/XTZ-USD/spot",
     minPriceAgeSeconds: seconds("PRICE_MIN_AGE_SECONDS", 900),
     pendingSeconds: seconds("PENDING_PUSH_SECONDS", 120),
-    allowedOrigins: (env("ALLOWED_ORIGINS") ?? "https://dex.brobuilder.eidoriantan.com")
-      .split(",").map((origin) => origin.trim().replace(/\/+$/, "")).filter(Boolean),
     port: seconds("PORT", 3001),
     dryRun: env("DRY_RUN") === "1",
   };

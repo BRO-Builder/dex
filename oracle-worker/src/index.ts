@@ -10,7 +10,8 @@ const oracle = new Oracle(config, signer);
 
 const app = express();
 app.disable("x-powered-by");
-app.use(cors({ origin: config.allowedOrigins, methods: ["POST"] }));
+// Any origin may call it: CORS can't stop direct calls anyway, the age threshold limits spending.
+app.use(cors({ origin: "*", methods: ["GET", "POST"] }));
 
 app.get("/health", (_request, response) => {
   response.json({ status: "ok", network: config.network, dry_run: config.dryRun });

@@ -39,7 +39,6 @@ Copy `.env.example` to `.env`. `MARKET_ADDRESS`, `DEX_ADDRESS` and the key must 
 | `TZKT_API_URL` | no | defaults to the network's |
 | `PRICE_MIN_AGE_SECONDS` | no | `900` (15 minutes); must be below the market's `max_price_age` |
 | `PENDING_PUSH_SECONDS` | no | `120`; after a send, requests get `pending` for this long instead of sending again |
-| `ALLOWED_ORIGINS` | no | comma-separated; defaults to `https://dex.brobuilder.eidoriantan.com` |
 | `PORT` | no | `3001` |
 | `DRY_RUN` | no | `1` computes the price and decision without sending |
 | `COINBASE_URL` | no | `https://api.coinbase.com/v2/prices/XTZ-USD/spot` |
@@ -73,8 +72,9 @@ this by polling TzKT.
 
 ## Security
 
-The endpoint is public because a browser can't keep a token. CORS only limits which sites
-can read the response, so it doesn't stop direct calls. What limits spending is the age
+The endpoint is public because a browser can't keep a token. CORS allows every origin
+(`Access-Control-Allow-Origin: *`): it only limits which sites can read the response and
+never stopped direct calls, so restricting it protected nothing. What limits spending is the age
 threshold: at most 24h / `PRICE_MIN_AGE_SECONDS` updates a day, about 96 at the default,
 however often the endpoint is called. Fresh-price requests are answered from memory.
 

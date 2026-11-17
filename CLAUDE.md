@@ -36,14 +36,21 @@ Vite multi-page app. `vite.config.ts` defines four HTML entry points:
 
 The Build Pool pages share `src/components/PoolShell.tsx` (layout, nav between the three
 `.html` pages, `useOperations` sign-and-send review modal, `ConfigError`) and
-`src/build-pool.css`. The DEX and Voting pages use `src/styles.css`.
+`src/build-pool.css`. `src/components/PoolParts.tsx` holds the `Lines` table and
+`useUpkeep` (the anyone-can-call `pay_interest` / `release_undrawn` actions). The DEX and
+Voting pages use `src/styles.css`.
 
 `src/shared/`:
 - `tezos.ts`: `NETWORKS` (RPC, TzKT API, explorer URLs) and `useWallet()` (Taquito +
   Beacon wallet). The network comes from `VITE_NETWORK`, defaulting to Mainnet.
 - `dex.ts`: reads BRODex storage from TzKT and the XTZ/USD price from Coinbase.
 - `ledger.ts`: BROFunding / BROProjects types, storage parsing, and USD/BRO math.
-  Ledger prices are BRO base units per USD cent × 10^6 (`PRICE_SCALE`).
+  Ledger prices are BRO base units per USD cent × 10^6 (`PRICE_SCALE`). Its project
+  rules (daily interest on drawn money, interest hold, 30-day payouts, amount owed, late
+  fee, default date) mirror the contracts and the portal's `src/shared/projectRules.ts`
+  in the contracts repo. Keep all three in sync.
+- `rate.ts`: the BRO rate API client (through the CORS proxy) that quotes the monthly
+  rate on the Build Pool form; ported from the portal's `src/lib/rate.ts`.
 - `useLedger.ts`, `useMarket.ts`: hooks that load funding/projects storage and the
   BROMarketAssistant (its address is read from the projects storage, not from env).
 - `bakers.ts`: preset baker lists per network (currently empty).

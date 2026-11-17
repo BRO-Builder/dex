@@ -505,3 +505,15 @@ button:disabled {
     grid-column: span 2
   }
 }
+
+.lines td:last-child,
+.lines th:last-child {
+  text-align: right;
+  padding-right: 0
+}
+
+.fundrow .secondary {
+  padding: 9px 12px;
+  font-size: 13px;
+  white-space: nowrap
+}

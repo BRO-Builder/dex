@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
+import { useUpkeep } from "../components/PoolParts";
 import { ConfigError, PoolShell, useOperations } from "../components/PoolShell";
 import {
-  PROJECTS_ADDRESS, STATUS_LABELS, bpsToPct, defaultableAt, formatBro, formatCents, formatDate, formatDateTime,
-  lateFee, lateFeeStart, toTimestamp, type Project,
+  PROJECTS_ADDRESS, STATUS_LABELS, bpsToPct, defaultableAt, drawSplit, formatBro, formatCents, formatDate, formatDateTime, hasUndrawn,
+  isOpen, lateFeeStart, owed, pendingHoldPayout, periodEnded, toTimestamp, type Project,
 } from "../shared/ledger";
 import { fetchTokenBalance } from "../shared/tokenMetadata";
 import { useLedger } from "../shared/useLedger";
@@ -16,6 +17,7 @@ export default function ApproverPage() {
   const ledger = useLedger(wallet);
   const market = useMarket(wallet, ledger.storage?.projects.market);
   const ops = useOperations(wallet);
+  const upkeep = useUpkeep({ ops, market, reload: () => void ledger.reload() });
   const [role, setRole] = useState<Role>("unknown");
   const [now, setNow] = useState(() => new Date());
 
@@ -50,7 +52,8 @@ export default function ApproverPage() {
 
   const canAct = role === "admin" || role === "nft";
   const pending = projects.filter((project) => project.status === "Active" && project.currentMilestone < project.milestones.length);
-  const proposals = projects.filter((project) => (project.status === "Active" || project.status === "Repaying") && project.proposedEndDate);
+  const proposals = projects.filter((project) => isOpen(project) && project.proposedEndDate);
+  const upkeepDue = projects.filter((project) => isOpen(project) && (pendingHoldPayout(project, now) > 0n || (hasUndrawn(project) && periodEnded(project, now))));
   const watch = storage
     ? projects
       .map((project) => ({ project, at: defaultableAt(project, storage.graceDays) }))
@@ -64,7 +67,8 @@ export default function ApproverPage() {
     if (!ms) return;
     ops.setReview({
       title: `Approve M${ms.index + 1} on #${project.id}`,
-      text: `Approves "${ms.description}". The contractor can then claim its full ${formatCents(ms.usd)}; there is no fee for a late approval.`
+      text: `Approves "${ms.description}". The contractor can then draw its ${formatCents(ms.usd)}, less any part still missing from the interest hold; there is no fee for a late approval.`
+        + (periodEnded(project, now) ? " The contract period has ended, so it can no longer be drawn." : "")
         + (ms.index + 1 < project.milestones.length ? ` M${ms.index + 2} falls due ${project.milestones[ms.index + 1].durationDays} days after this approval.` : ""),
       steps: [{ contract: PROJECTS_ADDRESS, entrypoint: "approve_milestone", params: String(project.id) }],
       onDone: () => {
@@ -81,8 +85,8 @@ export default function ApproverPage() {
       title: `Approve end date for #${project.id}`,
       text: `Sets the end date to ${formatDateTime(proposed)}`
         + (project.endDate ? `, replacing ${formatDateTime(project.endDate)}` : "")
-        + `. The late fee and default start after it plus the ${storage.graceDays}-day grace period.`
-        + (proposed < now ? " This date is already in the past." : "")
+        + `. It ends the contract period: no draws after it, and undrawn money can go back to investors. The late fee and default start after it plus the ${storage.graceDays}-day grace period.`
+        + (proposed < now ? " This date is already in the past, so the period ends immediately." : "")
         + " If the contractor changes the proposal before this is included, the approval fails.",
       steps: [{ contract: PROJECTS_ADDRESS, entrypoint: "approve_end_date", params: { project_id: String(project.id), end_date: toTimestamp(proposed) } }],
       onDone: () => {
@@ -105,13 +109,21 @@ export default function ApproverPage() {
     });
   }
 
-  function markDefault(project: Project) {
-    if (!PROJECTS_ADDRESS) return;
-    const unclaimed = project.milestones.filter((ms) => !ms.claimed).reduce((sum, ms) => sum + ms.escrowBro, 0n);
+  async function markDefault(project: Project) {
+    if (!PROJECTS_ADDRESS || !storage) return;
+    // mark_default converts the hold payout and investors' unpaid interest at the market price, so it needs a fresh one
+    const price = await market.freshPrice(ops.showToast);
+    if (!price) return;
+    const debt = owed(project, storage.graceDays);
+    const undrawn = project.released ? 0n : project.milestones.filter((ms) => ms.drawnAt === null).reduce((sum, ms) => sum + ms.escrowBro, 0n);
     ops.setReview({
       title: `Mark #${project.id} as defaulted`,
-      text: `Ends the project. Unclaimed escrow (${formatBro(unclaimed, decimals)}) and the BRO repaid so far (${formatBro(project.repaidBro, decimals)}) `
-        + "become the investors' pool, and the funding wallet tops it up as far as its balance allows. This can't be undone.",
+      text: `Ends the project. The ${formatCents(debt.due)} owed now${debt.fee > 0n ? " (late fee included)" : ""} is recorded but not collected. `
+        + "The hold pays the interest earned so far; the undrawn escrow"
+        + (undrawn > 0n ? ` (${formatBro(undrawn, decimals)})` : "")
+        + `, what's left of the hold and the BRO repaid so far (${formatBro(project.repaidBro, decimals)}) go to investors, `
+        + "and the funding wallet tops them up to their principal plus their share of the unpaid interest as far as its balance allows. "
+        + "Approved but undrawn milestones are not paid to the contractor. This can't be undone.",
       steps: [{ contract: PROJECTS_ADDRESS, entrypoint: "mark_default", params: String(project.id) }],
       onDone: () => {
         ops.showToast(`#${project.id} marked as defaulted.`);
@@ -138,11 +150,17 @@ export default function ApproverPage() {
     <div className="grid">
       <div className="card">
         <h2>Pending Milestones</h2>
-        <div className="desc">The current milestone of each project in progress. Approving pays the contractor the milestone's full amount, even when it is late.</div>
+        <div className="desc">
+          The current milestone of each project in progress. Approving lets the contractor draw the milestone's amount, even when it is late,
+          until the contract period ends. Part of the first draws is withheld for the interest hold.
+        </div>
         {ledger.projects === null && !ledger.error && <div className="empty">Loading projects...</div>}
         {ledger.projects !== null && pending.length === 0 && <div className="empty">No milestones are waiting for approval.</div>}
         {pending.map((project) => {
           const ms = project.milestones[project.currentMilestone];
+          // assumes it is drawn on its own, after the milestones already approved
+          const pendingUsd = project.milestones.filter((other) => other.index < project.currentMilestone && other.drawnAt === null).reduce((sum, other) => sum + other.usd, 0n);
+          const split = drawSplit({ ...project, holdUsd: project.holdUsd + drawSplit(project, pendingUsd).withheld }, ms.usd);
           return (
             <div className="loan" key={project.id}>
               <div className="loan-head">
@@ -155,7 +173,8 @@ export default function ApproverPage() {
               <div className="detail"><span>Milestone</span><span>{ms.description}</span></div>
               <div className="detail"><span>Amount</span><span>{formatCents(ms.usd)} ({bpsToPct(ms.pctBps)})</span></div>
               <div className="detail"><span>Due</span><span>{formatDateTime(ms.dueAt)}{ms.dueAt && now > ms.dueAt ? " (late)" : ""}</span></div>
-              <div className="detail total"><span>Contractor Receives</span><span>{formatCents(ms.usd)}</span></div>
+              {split.withheld > 0n && <div className="detail"><span>Withheld for Interest Hold</span><span>{formatCents(split.withheld)}</span></div>}
+              <div className="detail total"><span>Contractor Receives</span><span>{periodEnded(project, now) ? "Nothing (period ended)" : formatCents(split.paid)}</span></div>
               <details className="more">
                 <summary>Scope &amp; contractor</summary>
                 <dl>
@@ -176,7 +195,8 @@ export default function ApproverPage() {
         <h2>End Date Proposals</h2>
         <div className="desc">
           Contractors propose their project's end date (at launch, the estimated completion from the listing). Only the projects admin can approve or reject.
-          The approved date stays in force until a new one is approved. After it plus the grace period, the contractor owes a late fee for every day since the end date, and the project can be defaulted.
+          The approved date ends the contract period and stays in force until a new one is approved: no draws after it, and undrawn money can go back to investors.
+          After it plus the grace period, the contractor owes a late fee on what they repay for every day since the end date, and the project can be defaulted.
         </div>
         {ledger.projects !== null && proposals.length === 0 && <div className="empty">No end dates are waiting for approval.</div>}
         {proposals.map((project) => (
@@ -210,7 +230,7 @@ export default function ApproverPage() {
         {watch.map(({ project, at }) => {
           const overdue = now > at;
           const feeStart = storage ? lateFeeStart(project, storage.graceDays) : null;
-          const fee = storage ? lateFee(project, storage.graceDays, now) : null;
+          const debt = storage ? owed(project, storage.graceDays, now) : null;
           return (
             <div className="loan" key={project.id}>
               <div className="loan-head">
@@ -222,19 +242,41 @@ export default function ApproverPage() {
               </div>
               <div className="detail"><span>End Date</span><span>{project.endDate ? formatDateTime(project.endDate) : "Not approved"}</span></div>
               {feeStart && <div className="detail"><span>Grace Ends</span><span>{formatDateTime(feeStart)}</span></div>}
-              {fee && fee.feeUsd > 0n && (
-                <div className="detail"><span>Late Fee Now</span><span>{fee.lateDays} day{fee.lateDays === 1 ? "" : "s"} × {bpsToPct(project.lateFeeBpsPerDay)} = {formatCents(fee.feeUsd)}</span></div>
+              {debt && debt.feeBps > 0n && (
+                <div className="detail"><span>Late Fee Now</span><span>{bpsToPct(debt.feeBps)} ({bpsToPct(project.lateFeeBpsPerDay)} / day) = {formatCents(debt.fee)}</span></div>
               )}
+              {debt && <div className="detail"><span>Owed Now</span><span>{formatCents(debt.due)}</span></div>}
               <div className="detail"><span>Default Possible After</span><span>{formatDateTime(at)}</span></div>
-              {project.status === "Repaying" && (
+              {project.repaidUsd > 0n && (
                 <div className="detail"><span>Repaid</span><span>{formatCents(project.repaidUsd)}</span></div>
               )}
               <div className="actions-row">
-                <button className="secondary" type="button" disabled={!canAct || !overdue} onClick={() => markDefault(project)}>Mark Default</button>
+                <button className="secondary" type="button" disabled={!canAct || !overdue || market.blocked || !market.market} onClick={() => void markDefault(project)}>Mark Default</button>
               </div>
             </div>
           );
         })}
+      </div>
+
+      <div className="card">
+        <h2>Interest &amp; Undrawn Money</h2>
+        <div className="desc">
+          Anyone can pay the interest due from a project's hold at each 30-day mark since launch, and return undrawn money to investors once the
+          contract period has ended. Draws and repayments also pay the interest due first.
+        </div>
+        {ledger.projects !== null && upkeepDue.length === 0 && <div className="empty">No interest payouts or undrawn money due.</div>}
+        {upkeepDue.map((project) => (
+          <div className="loan" key={project.id}>
+            <div className="loan-head">
+              <div>
+                <h3>{project.title}</h3>
+                <div className="loc">#{project.id} · {STATUS_LABELS[project.status]}</div>
+              </div>
+            </div>
+            <div className="detail"><span>Interest Hold</span><span>{formatCents(project.holdUsd)} withheld · {formatCents(project.holdUsedUsd)} paid out</span></div>
+            {upkeep.actions(project, storage?.paused, now)}
+          </div>
+        ))}
       </div>
     </div>
 
