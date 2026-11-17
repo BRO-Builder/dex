@@ -22,18 +22,27 @@ own vote, which you can change or withdraw.
 - **Fund projects:** browse construction projects (residential or commercial), filter
   by status and type, and invest BRO in projects that are open for funding.
 - **Request funding:** contractors submit a project with its scope, site, budget,
-  interest, term, funding deadline and milestones.
+  term, funding deadline and milestones. The monthly interest rate (3–9%) is quoted by
+  the BRO rate API for the contractor's wallet, budget and term.
+
+Interest is charged by the day, only on money the contractor has drawn. An interest
+hold (budget × monthly rate × term) is withheld from the first draws and pays
+investors every 30 days. BRO Builder takes a share of investors' interest.
 
 Project, site and owner details are stored on-chain in plain text and are public.
 
 ### Portfolio
-- **My investments:** track the projects you funded, get refunds from projects that
-  failed to fund, and claim payouts.
-- **My projects:** for contractors, claim approved milestones and repay your projects.
+- **My investments:** see a statement for each project you funded (interest so far,
+  fees, undrawn money returned, what you can claim), get refunds from projects that
+  failed to fund, and claim payouts as interest, undrawn money and principal come in.
+- **My projects:** for contractors, draw approved milestones, repay at any time
+  (including early) and propose an end date.
 
 ### Approver
 For the projects admin and approver NFT holders: approve milestones and mark overdue
-projects as defaulted.
+projects as defaulted. The projects admin also approves or rejects end dates. Anyone can
+pay the interest due from a project's hold every 30 days and, after the end date,
+return undrawn money to investors (also available on the Portfolio page).
 
 ## Networks
 
@@ -42,7 +51,7 @@ supports Beacon, such as Temple or Kukai.
 
 Build Pool prices are in USD. The app converts them to BRO using the BRO/USD price that
 the BRO price oracle publishes on-chain. When that price is out of date, investing,
-milestone claims and repayments are paused until it updates.
+draws, interest payouts, repayments and defaults are paused until it updates.
 
 ## Smart contracts
 
