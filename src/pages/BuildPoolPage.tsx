@@ -1,10 +1,13 @@
 import type { ChangeEvent, FormEvent } from "react";
 import { useEffect, useState } from "react";
+import { Lines } from "../components/PoolParts";
 import { ConfigError, PoolShell, useOperations, withOperator } from "../components/PoolShell";
 import {
-  FUNDING_ADDRESS, PROJECTS_ADDRESS, STATUS_LABELS, amountDue, bpsToPct, entitlement, formatBro, formatCents, formatDate, formatDateTime,
-  fromPriceUnit, parseCents, toTimestamp, usdToBro, usdToBroUp, type Project, type ProjectType,
+  FUNDING_ADDRESS, MAX_RATE_BPS, MIN_RATE_BPS, PROJECTS_ADDRESS, STATUS_LABELS, bpsToPct, broToUsd, builderShare, dailyRatePct, formatBro,
+  formatCents, formatDate, formatDateTime, fromPriceUnit, holdTarget, maxInterest, parseCents, toTimestamp, usdToBro, usdToBroUp,
+  type Project, type ProjectType,
 } from "../shared/ledger";
+import { fetchRate, type RateQuote } from "../shared/rate";
 import { parseUnits } from "../shared/units";
 import { useLedger } from "../shared/useLedger";
 import { useLivePrice } from "../shared/useLivePrice";
@@ -24,7 +27,6 @@ type RequestForm = {
   ownerPhone: string;
   ownerEmail: string;
   budget: string;
-  interest: string;
   term: string;
   completion: string;
   deadline: string;
@@ -43,7 +45,6 @@ const INITIAL_FORM: RequestForm = {
   ownerPhone: "",
   ownerEmail: "",
   budget: "",
-  interest: "8",
   term: "6",
   completion: "",
   deadline: "",
@@ -66,7 +67,7 @@ function pctOf(part: bigint, whole: bigint) {
   return whole > 0n ? Math.min(100, Number(part * 10000n / whole) / 100) : 0;
 }
 
-function readForm(form: RequestForm, milestones: MilestoneForm[]) {
+function readForm(form: RequestForm, milestones: MilestoneForm[], quote: RateQuote | null) {
   return {
     title: form.title.trim(),
     scope: form.scope.trim(),
@@ -78,7 +79,8 @@ function readForm(form: RequestForm, milestones: MilestoneForm[]) {
     phone: form.ownerPhone.trim(),
     email: form.ownerEmail.trim(),
     budget: parseCents(form.budget),
-    interestBps: Math.round(parseFloat(form.interest) * 100),
+    // the monthly rate is quoted by the BRO rate API, not entered
+    rateBps: quote && Number.isFinite(quote.monthlyRatePct) ? Number(parseUnits(quote.monthlyRatePct.toFixed(2), 2) ?? NaN) : null,
     term: Number(form.term),
     // dates are local: completion at the start of the day, the deadline at its end
     completion: form.completion ? new Date(`${form.completion}T00:00:00`) : null,
@@ -101,15 +103,19 @@ function milestoneUsd(budget: bigint, pcts: number[]) {
   });
 }
 
-function validate(request: ReturnType<typeof readForm>, maxMilestones: number) {
+function validate(request: ReturnType<typeof readForm>, maxMilestones: number, quoteLoading: boolean) {
   if (!request.title) return "Add a project title.";
   if (!request.street || !request.city || !request.state || !request.zip) return "Complete the site address.";
   if (!/^\d{5}(-\d{4})?$/.test(request.zip)) return "ZIP should be 5 digits (or ZIP+4).";
   if (!request.owner) return "Add the homeowner or property owner name.";
   if (request.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(request.email)) return "Owner email doesn't look valid.";
   if (!request.budget || request.budget <= 0n) return "Enter the amount needed in dollars (up to 2 decimals).";
-  if (!(request.interestBps >= 50 && request.interestBps <= 5000)) return "Interest must be between 0.5% and 50%.";
   if (!(Number.isInteger(request.term) && request.term >= 1 && request.term <= 60)) return "Term must be 1–60 whole months.";
+  if (quoteLoading) return "Wait for the interest rate quote to finish.";
+  if (request.rateBps === null || Number.isNaN(request.rateBps)) return "No interest rate quote yet. Connect a wallet and enter the amount needed and term.";
+  if (request.rateBps < MIN_RATE_BPS || request.rateBps > MAX_RATE_BPS) {
+    return `The quoted monthly rate of ${bpsToPct(request.rateBps)} is outside the 3%–9% the contract accepts, so this project can't be listed.`;
+  }
   if (!request.completion) return "Pick an estimated completion date.";
   if (!request.deadline) return "Pick a funding deadline.";
   if (request.deadline.getTime() <= Date.now()) return "The funding deadline must be in the future.";
@@ -139,6 +145,37 @@ export default function BuildPoolPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [fundAmounts, setFundAmounts] = useState<Record<number, string>>({});
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [quote, setQuote] = useState<RateQuote | null>(null);
+  const [quoteStatus, setQuoteStatus] = useState<{ loading: boolean; error: string | null }>({ loading: false, error: null });
+
+  // The monthly rate comes from the BRO rate API for the wallet, budget and term (as on the portal)
+  useEffect(() => {
+    const budget = Number(form.budget);
+    const termDays = Number(form.term) * 30;
+    setQuote(null);
+    if (!wallet.address || !(budget > 0) || !(termDays > 0)) {
+      setQuoteStatus({ loading: false, error: null });
+      return;
+    }
+    const controller = new AbortController();
+    setQuoteStatus({ loading: true, error: null });
+    const timer = window.setTimeout(async () => {
+      try {
+        const result = await fetchRate({ address: wallet.address!, loanAmount: budget, termDays, primo: true }, controller.signal);
+        if (!Number.isFinite(result.monthlyRatePct)) throw new Error("Rate API response is missing monthly_rate_pct");
+        setQuote(result);
+        setQuoteStatus({ loading: false, error: null });
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        console.error("Rate quote:", error);
+        setQuoteStatus({ loading: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    }, 500);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [wallet.address, form.budget, form.term]);
 
   useEffect(() => {
     if (!detailsOpen) return;
@@ -173,15 +210,16 @@ export default function BuildPoolPage() {
 
   async function submitRequest(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const request = readForm(form, milestones);
-    const message = validate(request, maxMilestones);
+    const request = readForm(form, milestones, quote);
+    const message = validate(request, maxMilestones, quoteStatus.loading);
     setFormError(message);
-    if (message || !FUNDING_ADDRESS || !request.budget || !request.completion || !request.deadline) return;
+    if (message || !FUNDING_ADDRESS || !request.budget || !request.completion || !request.deadline || request.rateBps === null) return;
     if (!await ops.requireAddress()) return;
 
     ops.setReview({
       title: "Submit Project",
-      text: `Lists a ${formatCents(request.budget)} project for funding until ${formatDate(request.deadline)}. `
+      text: `Lists a ${formatCents(request.budget)} project at ${bpsToPct(request.rateBps)} a month on drawn money, for funding until ${formatDate(request.deadline)}. `
+        + `An interest hold of ${formatCents(holdTarget({ budgetUsd: request.budget, monthlyRateBps: request.rateBps, termMonths: request.term }))} will be withheld from your first draws. `
         + "Project, site and owner details are stored on the funding contract in plain text and are public.",
       steps: [{
         contract: FUNDING_ADDRESS,
@@ -195,7 +233,7 @@ export default function BuildPoolPage() {
           est_completion: toTimestamp(request.completion),
           funding_deadline: toTimestamp(request.deadline),
           budget_usd: request.budget.toString(),
-          interest_bps: String(request.interestBps),
+          monthly_rate_bps: String(request.rateBps),
           term_months: String(request.term),
           milestones: request.milestones.map((ms) => ({
             description: ms.description,
@@ -242,7 +280,8 @@ export default function BuildPoolPage() {
       title: `Invest in #${project.id}`,
       text: `Lets the funding contract move up to ${formatBro(amount, decimals)} from your wallet, invests, then removes that permission. `
         + `It values your BRO at the market assistant's on-chain price (1 BRO = ${usdNumber(fromPriceUnit(price, decimals) ?? 0, 5)}) and takes only what is still needed to reach the budget. `
-        + `You are owed your BRO plus ${bpsToPct(project.interestBps)} at settlement. `
+        + `You earn ${bpsToPct(project.monthlyRateBps)} a month on your share of the money the contractor draws, for the days it is drawn, less BRO Builder's ${bpsToPct(project.builderShareBps)} share; `
+        + "interest is paid every 30 days, undrawn money comes back to you, and your principal comes back as BRO at full repayment. "
         + "The deposit that completes the budget also moves the project's BRO to the projects contract.",
       steps: withOperator({ address: storage.tokenAddress, tokenId: storage.tokenId }, owner, FUNDING_ADDRESS, [
         { contract: FUNDING_ADDRESS, entrypoint: "invest", params: { project_id: String(project.id), max_bro: amount.toString() } },
@@ -255,13 +294,36 @@ export default function BuildPoolPage() {
     });
   }
 
-  const request = readForm(form, milestones);
+  /** Before investing: the most a deposit worth `usd` can earn (all drawn at launch and kept for the whole term), less BRO Builder's share. */
+  function renderEstimate(project: Project, usd: bigint) {
+    const most = maxInterest(project, usd);
+    const fee = builderShare(most, project.builderShareBps);
+    const net = most - fee;
+    return <>
+      <Lines head={`Your ${bpsToPct(project.budgetUsd > 0n ? usd * 10000n / project.budgetUsd : 0n)}`} rows={[
+        ["Your deposit", formatCents(usd)],
+        [`Most you can earn (all ${formatCents(project.budgetUsd)} drawn at launch, kept ${project.termMonths} month${project.termMonths === 1 ? "" : "s"})`, `${formatCents(most)} interest`],
+        [`BRO Builder service fee (${bpsToPct(project.builderShareBps)} of your interest)`, `-${formatCents(fee)}`],
+        ["Your interest at most", `${formatCents(net)}${usd > 0n ? ` (${bpsToPct(net * 10000n / usd)})` : ""}`],
+      ]} />
+      <div className="muted">
+        If less is drawn or the contractor repays early, you earn interest only on the money used, for the days it was used,
+        and your share of any undrawn money comes back to you. Interest is paid every 30 days from launch, in BRO at that day's price;
+        your principal comes back as the BRO you deposited. Swapping BRO to XTZ on the exchange has its own fee.
+      </div>
+    </>;
+  }
+
+  const request = readForm(form, milestones, quote);
   // estimate at the live price: the on-chain one can be hours old, and investors fund at the price of the day
   const requestBro = request.budget && live.price ? usdToBro(request.budget, live.price) : null;
   const msUsd = request.budget ? milestoneUsd(request.budget, request.milestones.map((ms) => ms.pctBps)) : null;
   const pctTotal = request.milestones.reduce((sum, ms) => sum + (ms.pctBps || 0), 0);
-  const interestValid = request.interestBps >= 50 && request.interestBps <= 5000;
-  const repayment = request.budget && interestValid ? request.budget * BigInt(10000 + request.interestBps) / 10000n : null;
+  const rateValid = request.rateBps !== null && request.rateBps >= MIN_RATE_BPS && request.rateBps <= MAX_RATE_BPS;
+  const termValid = Number.isInteger(request.term) && request.term >= 1 && request.term <= 60;
+  const hold = request.budget && request.rateBps !== null && termValid
+    ? holdTarget({ budgetUsd: request.budget, monthlyRateBps: request.rateBps, termMonths: request.term })
+    : null;
 
   const now = new Date();
   const isOpen = (project: Project) => project.status === "Funding" && now <= project.fundingDeadline;
@@ -270,10 +332,10 @@ export default function BuildPoolPage() {
     funded: totals.funded + project.fundedUsd,
     open: totals.open + (isOpen(project) ? 1 : 0),
     toFund: totals.toFund + (isOpen(project) ? project.budgetUsd - project.fundedUsd : 0n),
-    interest: totals.interest + project.interestBps,
+    rate: totals.rate + project.monthlyRateBps,
     residential: totals.residential + (project.projectType === "commercial" ? 0 : 1),
     commercial: totals.commercial + (project.projectType === "commercial" ? 1 : 0),
-  }), { budget: 0n, funded: 0n, open: 0, toFund: 0n, interest: 0, residential: 0, commercial: 0 });
+  }), { budget: 0n, funded: 0n, open: 0, toFund: 0n, rate: 0, residential: 0, commercial: 0 });
   const visible = projects.filter((project) => (typeFilter === "all" || project.projectType === typeFilter) && (!openOnly || isOpen(project)));
 
   return <PoolShell wallet={wallet} active="build-pool" title="Build Pool" subtitle="Fund construction projects with BRO Token or request project funding.">
@@ -294,9 +356,9 @@ export default function BuildPoolPage() {
         <div className="sub">{pctOf(stats.funded, stats.budget).toFixed(1)}% of budgets</div>
       </div>
       <div className="stat">
-        <div className="label">Avg. Interest</div>
-        <div className="value">{projects.length ? bpsToPct(Math.round(stats.interest / projects.length)) : "—"}</div>
-        <div className="sub">Paid to investors at settlement</div>
+        <div className="label">Avg. Monthly Rate</div>
+        <div className="value">{projects.length ? bpsToPct(Math.round(stats.rate / projects.length)) : "—"}</div>
+        <div className="sub">On drawn money, paid every 30 days</div>
       </div>
     </div>
     <div className="pool-bar">
@@ -389,8 +451,15 @@ export default function BuildPoolPage() {
           </div>
           <div className="trio">
             <div className="box">
-              <div className="top"><label htmlFor="interest">Interest</label><span>%</span></div>
-              <input className="field" type="number" min="0.5" max="50" step="0.01" {...field("interest")} />
+              <div className="top"><label htmlFor="rate">Monthly Rate</label><span>%</span></div>
+              <input
+                className="field"
+                id="rate"
+                type="text"
+                readOnly
+                value={request.rateBps !== null ? (request.rateBps / 100).toFixed(2) : ""}
+                placeholder={!wallet.address ? "Connect a wallet" : quoteStatus.loading ? "Quoting…" : "Enter amount & term"}
+              />
             </div>
             <div className="box">
               <div className="top"><label htmlFor="term">Term</label><span>mo</span></div>
@@ -401,6 +470,18 @@ export default function BuildPoolPage() {
               <input className="field" type="date" {...field("completion")} />
             </div>
           </div>
+          {quoteStatus.error && <div className="err">Couldn't get an interest rate quote: {quoteStatus.error}</div>}
+          {quote && (
+            <div className="desc">
+              Rate quoted by the BRO rate API for your wallet, amount and term: {quote.monthlyRatePct}% a month
+              {request.rateBps !== null ? ` (${dailyRatePct(request.rateBps)} a day on drawn money)` : ""}.
+              Risk: {quote.riskCategory} (score {quote.totalScore}/100, {quote.selfReportedPoints} self-reported).
+              {quote.limitations.map((item) => <span key={item}><br />• {item}</span>)}
+            </div>
+          )}
+          {request.rateBps !== null && !rateValid && (
+            <div className="err">The quoted rate is outside the 3%–9% a month the contract accepts, so this project can't be listed.</div>
+          )}
           <div className="box">
             <div className="top">
               <label htmlFor="deadline">Funding Deadline</label>
@@ -451,24 +532,30 @@ export default function BuildPoolPage() {
           <div className="details">
             <div className="detail"><span>Project Cost</span><span>{request.budget ? formatCents(request.budget) : "—"}</span></div>
             <div className="detail"><span>Funded in BRO (est.)</span><span>{requestBro !== null ? formatBro(requestBro, decimals) : "—"}</span></div>
-            <div className="detail"><span>Interest</span><span>{interestValid ? bpsToPct(request.interestBps) : "—"}</span></div>
-            <div className="detail"><span>Term</span><span>{request.term > 0 ? `${request.term} months (sets the interest quote)` : "—"}</span></div>
+            <div className="detail"><span>Monthly Rate</span><span>{request.rateBps !== null ? `${bpsToPct(request.rateBps)} (${dailyRatePct(request.rateBps)} a day)` : "—"}</span></div>
+            <div className="detail"><span>Term</span><span>{termValid ? `${request.term} months (sizes the interest hold)` : "—"}</span></div>
             <div className="detail"><span>Proposed End Date</span><span>{formatDate(request.completion)}</span></div>
             <div className="detail"><span>Funding Deadline</span><span>{formatDate(request.deadline)}</span></div>
             <div className="detail"><span>Milestones</span><span>{milestones.length} · {request.milestones.reduce((sum, ms) => sum + (ms.days || 0), 0)} days on time</span></div>
-            <div className="detail total"><span>Total Repayment</span><span>{repayment !== null ? formatCents(repayment) : "—"}</span></div>
+            <div className="detail total"><span>Interest Hold</span><span>{hold !== null ? formatCents(hold) : "—"}</span></div>
+          </div>
+          <div className="desc">
+            <strong>Interest hold.</strong> Budget × monthly rate × term is withheld from your first draw(s): your first draw arrives minus this hold
+            (all of it, if the draw is smaller, with the rest taken from the next draws). It pays investors' interest every 30 days, and whatever
+            is unused comes off what you repay. You repay what you drew plus the real interest (charged by the day only on money drawn) minus the hold.
           </div>
           <div className="desc">
             Your completion date is proposed as the project's end date once it's funded, and the projects admin approves it (you can propose
-            a new one later). Repay in full within the grace period after the approved end date. After that, a late fee of
-            {" "}{ledger.storage ? bpsToPct(ledger.storage.funding.lateFeeBpsPerDay) : "—"} of the total repayment is added for every day since
-            the end date, up to 100%.
+            a new one later). The approved end date ends the contract period: no draws after it, and undrawn money goes back to investors.
+            Repay in full within the grace period after it. After that, a late fee of
+            {" "}{ledger.storage ? bpsToPct(ledger.storage.funding.lateFeeBpsPerDay) : "—"} of what each installment pays is added for every day since
+            the end date, up to 100%. BRO Builder takes {ledger.storage ? bpsToPct(ledger.storage.funding.builderShareBps) : "—"} of investors' interest.
           </div>
 
           {formError && <div className="err">{formError}</div>}
           <button className="primary mt-18" type="submit" disabled={Boolean(ledger.error) || ledger.storage?.funding.paused}>Review &amp; Submit Project</button>
           <div className="notice">
-            You repay the total in dollars, in installments, after the last milestone; each installment is converted to BRO at that day's price.
+            You can repay at any time, in dollar installments; each one is converted to BRO at that day's price. Repaying early stops the interest.
             Project, site and owner details are written to the funding contract and are public.
           </div>
         </form>
@@ -477,7 +564,10 @@ export default function BuildPoolPage() {
       { tab === "fund" && (
         <section>
           <h2>Fund Projects</h2>
-          <div className="desc">Invest BRO in a project and receive your BRO plus its interest when it is repaid.</div>
+          <div className="desc">
+            Invest BRO in a project and earn its monthly rate on the money the contractor draws, for the days it is drawn. Interest is paid every
+            30 days; undrawn money comes back to you, and your principal comes back as BRO at full repayment.
+          </div>
           <div className="segment" role="group" aria-label="Filter by type">
             {(["all", "residential", "commercial"] as const).map((value) => (
               <button type="button" className={typeFilter === value ? "active" : ""} onClick={() => setTypeFilter(value)} key={value}>
@@ -499,6 +589,8 @@ export default function BuildPoolPage() {
               const neededBro = live.price ? usdToBroUp(remainingUsd, live.price) : null;
               const amount = decimals === undefined ? null : parseUnits(fundAmounts[project.id]?.trim() ?? "", decimals);
               const taken = amount && neededBro !== null && amount > neededBro ? neededBro : amount;
+              // the deposit that closes funding is credited exactly the remaining budget
+              const depositUsd = taken && taken > 0n && live.price ? (taken === neededBro ? remainingUsd : broToUsd(taken, live.price)) : null;
               const daysLeft = Math.ceil((project.fundingDeadline.getTime() - now.getTime()) / DAY_MS);
               return (
                 <div className="loan" key={project.id}>
@@ -514,8 +606,9 @@ export default function BuildPoolPage() {
                   </div>
                   <div className="bar" role="img" aria-label={`${pct.toFixed(0)}% funded`}><i style={{ width: `${pct}%` }} /></div>
                   <div className="detail"><span>Funded</span><span>{formatCents(project.fundedUsd)} / {formatCents(project.budgetUsd)} ({pct.toFixed(0)}%)</span></div>
-                  <div className="detail"><span>Interest</span><span>{bpsToPct(project.interestBps)}</span></div>
+                  <div className="detail"><span>Monthly Rate</span><span>{bpsToPct(project.monthlyRateBps)} on drawn money</span></div>
                   <div className="detail"><span>Term</span><span>{project.termMonths} months</span></div>
+                  <div className="detail"><span>BRO Builder Share</span><span>{bpsToPct(project.builderShareBps)} of investors' interest</span></div>
                   <div className="detail">
                     <span>Funding Deadline</span>
                     <span>{formatDate(project.fundingDeadline)}{open ? ` · ${daysLeft} day${daysLeft === 1 ? "" : "s"} left` : ""}</span>
@@ -537,7 +630,8 @@ export default function BuildPoolPage() {
                           <dd>{ms.description} · {bpsToPct(ms.pctBps)} ({formatCents(ms.usd)}) · {ms.durationDays} days</dd>
                         </span>
                       ))}
-                      <dt>Repayment</dt><dd>{formatCents(amountDue(project))}</dd>
+                      <dt>Interest Hold</dt><dd>{formatCents(holdTarget(project))} (budget × rate × term)</dd>
+                      <dt>Late Fee</dt><dd>{bpsToPct(project.lateFeeBpsPerDay)} / day since the end date, after grace</dd>
                     </dl>
                   </details>
                   {open && (
@@ -557,12 +651,14 @@ export default function BuildPoolPage() {
                         <button className="connect" type="button" disabled={ledger.storage?.funding.paused || !linked || market.blocked} onClick={() => void invest(project)}>Invest</button>
                       </div>
                       <div className="est">
-                        {taken && taken > 0n
-                          ? `${taken !== amount ? `Only about ${formatBro(taken, decimals)} is still needed. ` : ""}`
-                            + `You'd be owed about ${formatBro(entitlement(project, taken), decimals)} at settlement`
-                            + `${live.broUsd && decimals !== undefined ? ` · ≈ ${usdNumber(Number(taken) / 10 ** decimals * live.broUsd)} today` : ""}`
-                          : ""}
+                        {taken && taken > 0n && taken !== amount ? `Only about ${formatBro(taken, decimals)} is still needed.` : ""}
                       </div>
+                      {depositUsd !== null ? renderEstimate(project, depositUsd) : (
+                        <div className="muted">
+                          Enter a BRO amount to see what it can earn. Rate {bpsToPct(project.monthlyRateBps)} a month for {project.termMonths} month{project.termMonths === 1 ? "" : "s"};
+                          BRO Builder takes {bpsToPct(project.builderShareBps)} of your interest.
+                        </div>
+                      )}
                     </>
                   )}
                 </div>
@@ -613,6 +709,7 @@ export default function BuildPoolPage() {
           <div className="poolrow"><span>Still to Fund</span><strong>{formatCents(stats.toFund)}</strong></div>
           <div className="poolrow"><span>Funding Wallet Balance</span><strong>{market.market ? formatBro(market.market.reserve, decimals, 0) : "—"}</strong></div>
           <div className="poolrow"><span>Late Repayment Fee</span><strong>{ledger.storage ? `${bpsToPct(ledger.storage.funding.lateFeeBpsPerDay)} / day` : "—"}</strong></div>
+          <div className="poolrow"><span>BRO Builder Share</span><strong>{ledger.storage ? `${bpsToPct(ledger.storage.funding.builderShareBps)} of investors' interest` : "—"}</strong></div>
         </div>
       </div>
     )}
